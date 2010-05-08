@@ -41,6 +41,11 @@ class FollotterBroker < FollotterDatabase
       finish_count = 0
     end
 
+    if 0 == finish_count
+      `/bin/sh /home/seiryo/work/follotter/follotter_yats.sh`
+      finish_count = ActiveUser.count
+    end
+
     batch = Batch.create(
               :api_limit => @@limit,
               :finisher  => finish_count,
@@ -53,10 +58,12 @@ class FollotterBroker < FollotterDatabase
 
     self.optimize_tch
 
-    active_users = ActiveUser.find(:all, :limit => @@limit / 2)
+    active_users = ActiveUser.find(:all, :order => "updated DESC", :limit => @@limit / 2)
     active_users.each do |au|
-      self.create_queue(au.id)
+      au_id = au.id
       au.destroy
+      next unless User.find_by_id(au_id)
+      self.create_queue(au_id)
     end
 
     #self.broke_fetch_queue
