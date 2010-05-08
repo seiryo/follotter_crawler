@@ -21,8 +21,6 @@ class FollotterDatabase
   class User < ActiveRecord::Base
     has_many :friends
     has_many :followers
-    has_many :friend_histories
-    has_many :follower_histories
   end
 
   class Friend < ActiveRecord::Base
@@ -41,20 +39,12 @@ class FollotterDatabase
   end
 
   class Batch < ActiveRecord::Base
-    has_many :friend_histories
-    has_many :follower_histories
   end
 
-  class FriendHistory < ActiveRecord::Base
-    belongs_to :user
-    belongs_to :batch
+  class ActiveUser < ActiveRecord::Base
+    set_table_name  "users_maxid"
+    set_primary_key "internal_id"
   end
-
-  class FollowerHistory < ActiveRecord::Base
-    belongs_to :user
-    belongs_to :batch
-  end
-
 
 end
 
