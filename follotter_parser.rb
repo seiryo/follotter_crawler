@@ -107,21 +107,14 @@ class FollotterParser
 
     results_hash = Hash.new
     user_hash.keys.each do |target_id|
-      new_user                      = Hash.new
+      new_user                     = Hash.new
       new_user[:id]                = target_id
       new_user[:screen_name]       = user_hash[target_id]["screen_name"]
       new_user[:protected]         = user_hash[target_id]["protected"]
       new_user[:statuses_count]    = user_hash[target_id]["statuses_count"]
       new_user[:profile_image_url] = user_hash[target_id]["profile_image_url"]
       #new_user["last_posted_at"]    = DateTime.now
-      count = new_user[:statuses_count]
-      new_user[:is_crawl_target]   = (nil != count && 4000 <= count.to_i) ? true : false
-      if new_user[:is_crawl_target] && user_hash[target_id]["status"] && user_hash[target_id]["status"]["text"]
-        text = user_hash[target_id]["status"]["text"]
-        new_user[:is_crawl_target] = false unless text =~ /[ぁ-んァ-ヴ]/u
-      else
-        new_user[:is_crawl_target] = false
-      end
+      new_user[:is_crawl_target]   = true
       # 
       results_hash[target_id] = new_user
     end
