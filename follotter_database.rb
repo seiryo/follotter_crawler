@@ -9,13 +9,14 @@ class FollotterDatabase
   yaml = YAML.load_file("/home/seiryo/work/follotter/follotter_account.yml")
 
   ActiveRecord::Base.establish_connection(
-    :adapter  => "mysql",
-    :host     => "192.168.11.148",
-    :username => yaml["DB_USER"],
-    :password => yaml["DB_PASSWORD"],
-    :database => "follotter",
-    :socket   => "/var/lib/mysql/mysql.sock",
-    :encoding => "utf8"
+    :adapter   => "mysql",
+    :host      => "192.168.11.148",
+    :username  => yaml["DB_USER"],
+    :password  => yaml["DB_PASSWORD"],
+    :database  => "follotter",
+    :socket    => "/var/lib/mysql/mysql.sock",
+    :encoding  => "utf8",
+    :reconnect => true
   )  
 
   class User < ActiveRecord::Base
