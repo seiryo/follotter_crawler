@@ -23,6 +23,9 @@ class FollotterBroker < FollotterDatabase
   @@DIR_NEXT  = @@DIR_HOME + "queue/fetcher/"
 
   def self.start
+    account = YAML.load_file("/home/seiryo/work/follotter/follotter_account.yml")
+    @@API_USER     = account["API_USER"]
+    @@API_PASSWORD = account["API_PASSWORD"]
 
     ["follotter_fetcher.rb", "follotter_parser.rb", "follotter_updater.rb"].each do |name|
       self.check_process(name)
@@ -31,8 +34,16 @@ class FollotterBroker < FollotterDatabase
     @@limit = self.acquire_api_limit
 
     fetch_count, parse_count, update_count = self.acquire_queue_count
+
+    begin
+      finish_count = ActiveUser.count
+    rescue
+      finish_count = 0
+    end
+
     batch = Batch.create(
               :api_limit => @@limit,
+              :finisher  => finish_count,
               :fetcher   => fetch_count,
               :parser    => parse_count,
               :updater   => update_count)
@@ -173,7 +184,7 @@ class FollotterBroker < FollotterDatabase
 
   def self._open_uri(url)
     begin
-      doc = open(url, :http_basic_authentication => [@API_USER, @API_PASSWORD]) do |f|
+      doc = open(url, :http_basic_authentication => [@@API_USER, @@API_PASSWORD]) do |f|
         f.read
       end
     rescue => ex
