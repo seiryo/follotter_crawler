@@ -23,20 +23,12 @@ class FollotterBroker < FollotterDatabase
   @@DIR_NEXT  = @@DIR_HOME + "queue/fetcher/"
 
   def self.start
-    self.acquire_active_users
+
+    ["follotter_fetcher.rb", "follotter_parser.rb", "follotter_updater.rb"].each do |name|
+      self.check_process(name)
+    end
 
     @@limit = self.acquire_api_limit
-    return unless 0 < @@limit
-
-    #begin
-    #  f = File.open(@@DIR_HOME + "temp/results/updater_#{Time.now.strftime("%Y%m%d")}", "r")
-    #  exception = f.read
-    #  f.close
-    #  f = File.open(@@DIR_HOME + "temp/results/updater_#{Time.now.strftime("%Y%m%d")}", "w+")
-    #  f.close
-    #rescue
-    #  exception = nil
-    #end
 
     fetch_count, parse_count, update_count = self.acquire_queue_count
     batch = Batch.create(
@@ -44,18 +36,29 @@ class FollotterBroker < FollotterDatabase
               :fetcher   => fetch_count,
               :parser    => parse_count,
               :updater   => update_count)
+
     return if (0 != (fetch_count + update_count + update_count))
+    return unless 0 < @@limit
 
     self.optimize_tch
 
-    ids = self.acquire_friends_ids(4016161)
-    ids = [4016161, ids].flatten
-    ids.each { |user_id| self.create_queue(user_id) }
+    active_users = ActiveUser.find(:all, :limit => @@limit / 2)
+    active_users.each do |au|
+      self.create_queue(au.id)
+      au.destroy
+    end
 
-    self.broke_fetch_queue
+    #self.broke_fetch_queue
 
     batch.queue = batch.api_limit - @@limit
     batch.save
+  end
+
+  def self.check_process(name)
+    count = `ps aux | grep #{name} | grep -v grep | wc -l`
+    count = count.chomp.to_i
+    return if count > 0
+    `ruby #{name}`
   end
 
   def self.create_queue(user_id)
