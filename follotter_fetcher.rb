@@ -1,121 +1,74 @@
 require 'rubygems'
 require 'open-uri'
-require "json"
-require "pp"
-require 'date'
-require 'time'
-require 'parsedate'
-require 'tokyocabinet'
 require 'yaml'
 require 'webrick'
+require 'amqp'
+require 'mq'
+require 'pp'
 
 class FollotterFetcher
 
-  @@DIR_HOME  = "/home/seiryo/work/follotter/"
-  @@DIR_QUEUE = @@DIR_HOME + "queue/fetcher/"
-  @@DIR_TEMP  = @@DIR_HOME + "temp/fetcher/"
-  @@DIR_NEXT  = @@DIR_HOME + "queue/parser/"
+  @@CONFIG_FILE_PATH = '/home/seiryo/work/follotter/follotter_config.yml'
 
-  def self.start(keyword)
-    fetcher = FollotterFetcher.new(keyword)
-    while true
-      filename = fetcher.acquire_queue
-      next unless filename
-      begin
-        fetcher.acquire_params(filename)
-        # 
-        result = fetcher.execute
-        file = File.open("#{@@DIR_TEMP}#{filename}", 'w')
-        file.puts(result)
-        file.close
-        File.rename("#{@@DIR_TEMP}#{filename}", "#{@@DIR_NEXT}#{filename}")
-      rescue => e
-        begin
-          f = File.open(@@DIR_HOME + "logs/fetcher_#{Time.now.strftime("%Y%m%d")}", "a")
-          f.puts filename +":"+ e
-          f.close
+  def self.start
+    Signal.trap('INT') { AMQP.stop{ EM.stop } }
+
+    config  = YAML.load_file(@@CONFIG_FILE_PATH)
+    
+    thread_limit = config['FETCH_THREAD_LIMIT']
+    host_mq      = config['HOST_MQ']
+    pp thread_limit
+    pp host_mq
+    AMQP.start(:host => host_mq ) do
+      q = MQ.queue('fetcher')
+      q.pop do |msg|
+        unless msg
+          EM.add_timer(1){ q.pop }
+        else
+          loop do
+            break if thread_limit > Thread::list.size
+            sleep 1
+          end
+          Thread.new(msg, config) do |m, conf|
+            fetcher = FollotterFetcher.new(Marshal.load(m), conf)
+            if fetcher.fetch_api
+              pp fetcher.queue
+              MQ.queue('parser').publish(Marshal.dump(fetcher.queue))
+            end
+          end
+          q.pop
         end
-        File.unlink("#{@@DIR_TEMP}#{filename}")
       end
     end
   end
 
-  def initialize(keyword)
-    if keyword
-      @@PIPE = "grep #{keyword.to_s} | head"
-    else
-      @@PIPE = "head"
-    end
-    account = YAML.load_file("/home/seiryo/work/follotter/follotter_account.yml")
-    @API_USER     = account["API_USER"]
-    @API_PASSWORD = account["API_PASSWORD"]
+  attr_reader :queue
+
+  def initialize(queue, config)
+    @user     = config['API_USER']
+    @password = config['API_PASSWORD']
+    @host_mq  = config['HOST_MQ']
+    @queue    = queue
   end
 
-  def acquire_params(filename)
-    filenames = filename.split("_")
-    raise "filename format" unless 6 == filenames.size
-    @yyyymmdd    = filenames.shift
-    @api_section = filenames.shift
-    @api_type    = filenames.shift
-    @user_id     = filenames.shift
-    @target_id   = filenames.shift
-    @cursor      = filenames.shift
-    @user_id     = @user_id.to_i
-    @target_id   = @target_id.to_i
-    @filename    = filename
-  end
-
-  def acquire_queue
-    lists = `ls -1 #{@@DIR_QUEUE} | #{@@PIPE}`
-    return false if "" == lists
-    return false if  0 == lists.size
-    filename = lists.split("\n").first
-    begin
-      File.rename("#{@@DIR_QUEUE}#{filename}", "#{@@DIR_TEMP}#{filename}")
-    rescue
-      return false
-    end
-    return filename
-  end
-
-  def execute 
-    if ("ids" == @api_type && ("friends" == @api_section || "followers" == @api_section))
-      result = fetch_api
-      raise "execute ids result" unless result
-      return result
-    end
-    if ("statuses" == @api_section && ("friends" == @api_type || "followers" == @api_type))
-      result = fetch_api
-      raise "execute ids result" unless result
-      return result
-    end
-    raise "?"
-  end
-
-  # APIを叩いてフレンドなりフォロワーなりの配列を返す(再帰アリ)
   def fetch_api
-    # 初期処理
-    url =  "http://twitter.com/#{@api_section}/#{@api_type}.json"
-    url += "?id=#{@user_id.to_s}&cursor=#{@cursor}"
-    doc = ""
-    # APIを叩く
     begin
-      doc = open(url, :http_basic_authentication => [@API_USER, @API_PASSWORD]) do |f|
+      @queue[:fetch_result] = open(@queue[:url], :http_basic_authentication => [@user, @password]) do |f|
         f.read
       end
-    rescue => ex
-      raise ex
     rescue Timeout::Error => ex
-      raise ex
+      return false
     rescue OpenURI::HTTPError => ex
-      raise ex
+      return false
+    rescue => ex
+      return false
     end
-    return false if "" == doc
-    return doc
+    return false if "" == @queue[:fecth_result]
+    return true
   end
 
 end
 
 WEBrick::Daemon.start { 
-  FollotterFetcher.start(ARGV.shift)
+  FollotterFetcher.start
 }

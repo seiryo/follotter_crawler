@@ -8,7 +8,9 @@ require 'time'
 require 'parsedate'
 require 'tokyocabinet'
 require 'yaml'
-require 'webrick'
+require 'amqp'
+require 'mq'
+
 include TokyoCabinet
 
 $:.unshift(File.dirname(__FILE__))
@@ -16,60 +18,51 @@ require 'follotter_database'
 
 class FollotterBroker < FollotterDatabase
 
-  #@@DIR_QUEUE = "queue/updater/"
-  @@DIR_HOME  = "/home/seiryo/work/follotter/"
-  @@DIR_QUEUE = @@DIR_HOME + "queue/broker/"
-  @@DIR_TEMP  = @@DIR_HOME + "temp/broker/"
-  @@DIR_NEXT  = @@DIR_HOME + "queue/fetcher/"
-
   def self.start
-    account = YAML.load_file("/home/seiryo/work/follotter/follotter_account.yml")
-    @@API_USER     = account["API_USER"]
-    @@API_PASSWORD = account["API_PASSWORD"]
+    config = YAML.load_file("/home/seiryo/work/follotter/follotter_config.yml")
+    @@API_USER        = config["API_USER"]
+    @@API_PASSWORD    = config["API_PASSWORD"]
+    @@HOST_MQ         = config["HOST_MQ"]
+    @@HDB_FILE_PATH   = config["HDB_FILE_PATH"]
+    @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
 
     ["follotter_fetcher.rb", "follotter_parser.rb", "follotter_updater.rb"].each do |name|
       self.check_process(name)
     end
 
-    @@limit = self.acquire_api_limit
+    fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
 
-    fetch_count, parse_count, update_count = self.acquire_queue_count
+    AMQP.start(:host => @@HOST_MQ) do
 
-    begin
-      finish_count = ActiveUser.count
-    rescue
-      finish_count = 0
+      batch = self.create_batch(fetch_count, parse_count, update_count)
+      first_api_limit = batch.api_limit
+
+      return if (0 != (fetch_count + update_count + update_count))
+      #self.optimize_tch
+      return unless 0 < batch.api_limit
+
+      # アクティブユーザをクロールするためのキューを発行
+      active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit)
+      active_users.each do |au|
+        au_id = au.id
+        au.destroy
+        next unless User.find_by_id(au_id)
+        queues = self.create_queues(au_id)
+        queues.each do |queue|
+          pp queue
+          MQ.queue('fetcher').publish(Marshal.dump(queue))
+          batch.api_limit -= 1
+        end
+      end
+
+      # 発行したキューの数を記録し、保存
+      batch.queue = first_api_limit - batch.api_limit
+      batch.save
+
+      # 終了
+      AMQP.stop { EM.stop }
     end
 
-    if 0 == finish_count
-      `/bin/sh /home/seiryo/work/follotter/follotter_yats.sh`
-      finish_count = ActiveUser.count
-    end
-
-    batch = Batch.create(
-              :api_limit => @@limit,
-              :finisher  => finish_count,
-              :fetcher   => fetch_count,
-              :parser    => parse_count,
-              :updater   => update_count)
-
-    return if (0 != (fetch_count + update_count + update_count))
-    return unless 0 < @@limit
-
-    self.optimize_tch
-
-    active_users = ActiveUser.find(:all, :order => "updated DESC", :limit => @@limit / 2)
-    active_users.each do |au|
-      au_id = au.id
-      au.destroy
-      next unless User.find_by_id(au_id)
-      self.create_queue(au_id)
-    end
-
-    #self.broke_fetch_queue
-
-    batch.queue = batch.api_limit - @@limit
-    batch.save
   end
 
   def self.check_process(name)
@@ -79,85 +72,76 @@ class FollotterBroker < FollotterDatabase
     `ruby #{name}`
   end
 
-  def self.create_queue(user_id)
-    ymdhms = Time.now.strftime("%Y%m%d%H%M%S")
-    filenames = Array.new
-
-    api = "friends"
-    if Friend.find_all_by_user_id(user_id)  
-      filenames << [ymdhms, "statuses", api, user_id, 1, -1].join("_")
-    else
-      filenames << [ymdhms, api, "ids", user_id, 1, -1].join("_")
-    end
-    api = "followers"
-    if Follower.find_all_by_user_id(user_id)  
-      filenames << [ymdhms, "statuses", api, user_id, 1, -1].join("_")
-    else
-      filenames << [ymdhms, api, "ids", user_id, 1, -1].join("_")
-    end
-
-    filenames.each do |filename|
-      file = File.open("#{@@DIR_TEMP}#{filename}", 'w')
-      file.close
-      begin
-        File.rename("#{@@DIR_TEMP}#{filename}", "#{@@DIR_NEXT}#{filename}")
-      rescue
-        File.unlink("#{@@DIR_TEMP}#{filename}")
+  def self.create_queues(user_id, target = nil)
+    unless target
+      queues = Array.new
+      ["friends", "followers"].each do |t|
+        queues << self.create_queues(user_id, t)
       end
-      @@limit -= 1
+      return queues
     end
+
+    queue = Hash.new
+    queue[:user_id]   = user_id
+    queue[:target]    = target
+    queue[:relations] = self.acquire_relations(user_id, target)
+    if queue[:relations]
+      queue[:api] = "statuses"
+      queue[:url] = "http://twitter.com/#{queue[:api]}/#{queue[:target]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
+    else
+      queue[:api] = "ids"
+      queue[:url] = "http://twitter.com/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
+    end
+    return queue
   end
 
-  def self.acquire_queue_count
-    fetch_count  = `ls -1 #{@@DIR_HOME}queue/fetcher/ | wc -l`
-    fetch_count  = fetch_count.chomp.to_i
-    parse_count  = `ls -1 #{@@DIR_HOME}queue/parser/  | wc -l`
-    parse_count  = parse_count.chomp.to_i
-    update_count = `ls -1 #{@@DIR_HOME}queue/updater/ | wc -l`
-    update_count = update_count.chomp.to_i
+  def self.acquire_queue_count(queue_counter)
+    results = `ruby #{queue_counter}`
+    results = results.split("\n")
+    pp results
+    raise unless 3 == results.size
+    fetch_count  = (results.shift).to_i
+    parse_count  = (results.shift).to_i
+    update_count = (results.shift).to_i
     return fetch_count, parse_count, update_count
   end
 
-  def self.broke_fetch_queue 
-    ymdh = Time.now.strftime("%Y%m%d%H")
-    return unless File.exist?("#{@@DIR_QUEUE}#{ymdh}")
-    File.rename("#{@@DIR_QUEUE}#{ymdh}", "#{@@DIR_TEMP}#{ymdh}")
-    filename_hash = Hash.new
-    f = File.open("#{@@DIR_TEMP}#{ymdh}", 'r')
-    while line = f.gets
-      line.chomp!
-      lines = line.split(',')
-      next unless 2 == lines.size
-      user_key = lines.shift
-      filename = lines.shift
-      filename_hash[user_key] = filename
-      @@limit -= 1
-      break if @@limit <= 0
+  def self.acquire_relations(user_id, target)
+    if "friends" == target
+      relations = Friend.find_all_by_user_id(user_id)
+    elsif "followers" == target
+      relations = Follower.find_all_by_user_id(user_id)
+    else
+      raise
     end
-    filename_hash.each do |user_key, filename|
-      f = File.open("#{@@DIR_TEMP}#{filename}", 'w')
-      f.close
-      File.rename("#{@@DIR_TEMP}#{filename}", "#{@@DIR_NEXT}#{filename}")
-    end
-    File.unlink("#{@@DIR_TEMP}#{ymdh}")
+    return relations.map { |r| r.target_id }
   end
 
-  def self.acquire_friends_ids(user_id, cursor = "-1")
-    # 初期処理
-    url =  "http://twitter.com/friends/ids.json"
-    url += "?id=#{user_id.to_s}&cursor=#{cursor}"
-    doc = ""
-    # APIを叩く
-    doc = self._open_uri(url)
-    # JSONパース
-    target_ids = [user_id]
-    json       = JSON.parse(doc)
-    doc        = nil
-    json_users = json["ids"]
-    json_users.each do |json_user|
-      target_ids << json_user.to_i if json_user
+  def self.create_batch(fetch_count, parse_count, update_count)
+    # 未クロールのアクティブユーザ数カウント
+    begin
+      finish_count = ActiveUser.count
+    rescue
+      finish_count = 0
     end
-    return target_ids
+    # アクティブユーザが居ない場合は取得
+    if 0 == finish_count
+      `/bin/sh /home/seiryo/work/follotter/follotter_yats.sh`
+      finish_count = ActiveUser.count
+    end
+
+    # API残り回数を取得
+    api_limit = self.acquire_api_limit
+
+    # 本バッチ情報を記録、作成
+    batch = Batch.create(
+              :api_limit => api_limit,
+              :finisher  => finish_count,
+              :fetcher   => fetch_count,
+              :parser    => parse_count,
+              :updater   => update_count)
+
+    return batch
   end
 
   def self.acquire_api_limit
@@ -168,18 +152,9 @@ class FollotterBroker < FollotterDatabase
     return limit.to_i
   end
 
-  def self.acquire_active_users
-    url = "http://pcod.no-ip.org/yats/public_timeline?rss&json"
-    doc = self._open_uri(url)
-    res = JSON.parse(doc)
-    screen_names = res.map{ |user| user["user"] }
-    users = User.find(:all, :conditions => ["screen_name IN (?)", screen_names])
-    return users.map{ |user| user.id }
-  end
-
   def self.optimize_tch
     hdb = HDB::new
-    if !hdb.open(@@DIR_HOME + "users.tch", HDB::OWRITER | HDB::OCREAT)
+    if !hdb.open(@@HDB_FILE_PATH, HDB::OWRITER | HDB::OCREAT)
       ecode = hdb.ecode
       raise "HDB Open Error:" + @hdb.errmsg(ecode)
     end

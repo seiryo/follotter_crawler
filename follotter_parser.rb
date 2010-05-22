@@ -1,104 +1,69 @@
 require 'rubygems'
-require 'open-uri'
 require "time"
 require "json"
 require "pp"
 require 'date'
 require 'time'
 require 'parsedate'
-require 'tokyocabinet'
 require 'yaml'
 require 'webrick'
+require 'amqp'
+require 'mq'
 
 class FollotterParser
 
-  @@DIR_HOME  = "/home/seiryo/work/follotter/"
-  @@DIR_QUEUE = @@DIR_HOME + "queue/parser/"
-  @@DIR_TEMP  = @@DIR_HOME + "temp/parser/"
-  @@DIR_NEXT  = @@DIR_HOME + "queue/updater/"
+  @@CONFIG_FILE_PATH = '/home/seiryo/work/follotter/follotter_config.yml'
 
   def self.start
-    fetcher = FollotterParser.new
-    while true
-      filename = fetcher.acquire_queue
-      next unless filename
-      begin
-        # 
-        fetcher.acquire_params(filename)
-        fetcher.execute
-        File.rename("#{@@DIR_TEMP}#{filename}", "#{@@DIR_NEXT}#{filename}")
-      rescue => e
-        begin
-          f = File.open(@@DIR_HOME + "logs/parser_#{Time.now.strftime("%Y%m%d")}", "a")
-          f.puts filename +":"+ e
-          f.close
+    Signal.trap('INT') { AMQP.stop{ EM.stop } }
+
+    config  = YAML.load_file(@@CONFIG_FILE_PATH)
+
+    host_mq = config['HOST_MQ']
+
+    AMQP.start(:host => host_mq) do
+      q = MQ.queue('parser')
+      q.pop do |msg|
+        unless msg
+          EM.add_timer(1){ q.pop }
+        else
+          begin
+            parser = FollotterParser.new(Marshal.load(msg), config)
+            if parser.parse_fecth_result
+              MQ.new.queue('updater').publish(Marshal.dump(parser.queue))
+            end
+          rescue => ex
+            pp ex
+          end
+          q.pop
         end
-      #ensure
-        File.unlink("#{@@DIR_TEMP}#{filename}")
       end
     end
   end
 
-  def initialize
+  attr_reader :queue
+
+  def initialize(queue, config)
+    @queue   = queue
+    @host_mq = config['HOST_MQ']
   end
 
-  def acquire_params(filename)
-    filenames = filename.split("_")
-    raise "filename format" unless 6 == filenames.size
-    @yyyymmdd    = filenames.shift
-    @api_section = filenames.shift
-    @api_type    = filenames.shift
-    @user_id     = filenames.shift
-    @target_id   = filenames.shift
-    @cursor      = filenames.shift
-    @user_id     = @user_id.to_i
-    @target_id   = @target_id.to_i
-    @filename    = filename
-  end
-
-  def acquire_queue
-    lists = `ls -1 #{@@DIR_QUEUE}`
-    return false if "" == lists
-    filename = lists.split("\n").first
-    begin
-      File.rename("#{@@DIR_QUEUE}#{filename}", "#{@@DIR_TEMP}#{filename}")
-    rescue
-      return false
+  def parse_fecth_result
+    if "ids" == @queue[:api]
+      return parse_ids
+    elsif "statuses" == @queue[:api]
+      return parse_statuses
     end
-    return filename
-  end
-
-  def execute
-    f = open("#{@@DIR_TEMP}#{@filename}")
-    doc = f.read
-    f.close
-    if ("ids" == @api_type && ("friends" == @api_section || "followers" == @api_section))
-      results = parse_ids(doc)
-      raise "ids result" unless results
-      result = results.join(",")
-      file   = File.open("#{@@DIR_TEMP}#{@filename}", 'w')
-      file.puts(result)
-      file.close
-      return
-    end
-    if ("statuses" == @api_section && ("friends" == @api_type || "followers" == @api_type))
-      results = parse_statuses(doc)
-      raise "statuses result" unless results
-      f = File.open("#{@@DIR_TEMP}#{@filename}", 'w')
-      f.puts Marshal.dump(results)
-      f.close
-      #YAML.dump( results, File.open("#{@@DIR_TEMP}#{@filename}", 'w') )
-      return
-    end
-
     raise
   end
 
-  def parse_statuses(doc)
+  private
+
+  def parse_statuses
     # JSONパース
     user_hash = Hash.new
-    json      = JSON.parse(doc)
-    doc       = nil
+    json      = JSON.parse(@queue[:fetch_result])
+    @queue[:fetch_result] = nil
     json["users"].each do |json_user|
       next unless json_user["id"]
       user_hash[json_user["id"].to_i] = json_user
@@ -120,16 +85,18 @@ class FollotterParser
     end
     #cursor = json["next_cursor"]
     return false unless 0 < results_hash.size
-    return results_hash
+    @queue[:parse_result] = results_hash
+    return true
   end
 
   # APIを叩いてフレンドなりフォロワーなりの配列を返す(再帰アリ)
-  def parse_ids(doc)
+  def parse_ids
 
     # JSONパース
     target_ids = []
-    json       = JSON.parse(doc)
-    doc        = nil
+    json = JSON.parse(@queue[:fetch_result])
+    @queue[:fetch_result] = nil
+
     json_users = json["ids"]
     json_users.each do |json_user|
       target_ids << json_user.to_i if json_user
@@ -148,7 +115,8 @@ class FollotterParser
       #results << self.acquire(user, api, cursor)
     end
     return false unless 0 < target_ids.size
-    return target_ids.flatten
+    @queue[:parse_result] = target_ids.flatten
+    return true
   end
 
 end

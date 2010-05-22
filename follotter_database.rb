@@ -2,17 +2,16 @@
 
 require "rubygems"
 require "active_record"
-#require "/home/seiryo/work/cabinet/app/models/cabinet"
 
 class FollotterDatabase
 
-  yaml = YAML.load_file("/home/seiryo/work/follotter/follotter_account.yml")
+  config = YAML.load_file("/home/seiryo/work/follotter/follotter_config.yml")
 
   ActiveRecord::Base.establish_connection(
     :adapter   => "mysql",
-    :host      => "192.168.11.148",
-    :username  => yaml["DB_USER"],
-    :password  => yaml["DB_PASSWORD"],
+    :host      => config["HOST_DB"],
+    :username  => config["DB_USER"],
+    :password  => config["DB_PASSWORD"],
     :database  => "follotter",
     :socket    => "/var/lib/mysql/mysql.sock",
     :encoding  => "utf8",
@@ -33,10 +32,6 @@ class FollotterDatabase
   end
 
   class Timeline < ActiveRecord::Base
-    def self.select(user_id, target_id, action, batch_id)
-      where = "user_id = ? AND target_id = ? AND action = ? AND batch_id = ?"
-      Timeline.find(:first, :conditions => [where, user_id, target_id, action, batch_id]) 
-    end
   end
 
   class Batch < ActiveRecord::Base
