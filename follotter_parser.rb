@@ -30,7 +30,7 @@ class FollotterParser
           begin
             parser = FollotterParser.new(Marshal.load(msg), config)
             if parser.parse_fecth_result
-              MQ.new.queue('updater').publish(Marshal.dump(parser.queue))
+              MQ.queue('updater').publish(Marshal.dump(parser.queue))
             end
           rescue => ex
             pp ex
@@ -97,22 +97,22 @@ class FollotterParser
     json = JSON.parse(@queue[:fetch_result])
     @queue[:fetch_result] = nil
 
-    json_users = json["ids"]
+    json_users = json['ids']
     json_users.each do |json_user|
       target_ids << json_user.to_i if json_user
     end
     return false unless target_ids.size > 0
 
     # 終了処理
-    cursor = json["next_cursor"]
+    cursor = json['next_cursor']
     json            = nil
     json_user       = nil
     user_hash       = nil
     exist_user_hash = nil
-    if cursor != nil && cursor != "" && cursor.to_s != "0"
-      #再帰
-      #現在は再帰的に取らないのでコメントアウト
-      #results << self.acquire(user, api, cursor)
+    if cursor != nil && cursor != '' && cursor.to_s != '0' 
+      @queue[:next_cursor] = cursor.to_s
+    else
+      @queue[:next_cursor] = '0'
     end
     return false unless 0 < target_ids.size
     @queue[:parse_result] = target_ids.flatten

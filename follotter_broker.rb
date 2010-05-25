@@ -42,14 +42,14 @@ class FollotterBroker < FollotterDatabase
       return unless 0 < batch.api_limit
 
       # アクティブユーザをクロールするためのキューを発行
-      active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit)
+      active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit / 4)
       active_users.each do |au|
         au_id = au.id
         au.destroy
         next unless User.find_by_id(au_id)
         queues = self.create_queues(au_id)
         queues.each do |queue|
-          pp queue
+          # pp queue
           MQ.queue('fetcher').publish(Marshal.dump(queue))
           batch.api_limit -= 1
         end
@@ -85,20 +85,21 @@ class FollotterBroker < FollotterDatabase
     queue[:user_id]   = user_id
     queue[:target]    = target
     queue[:relations] = self.acquire_relations(user_id, target)
-    if queue[:relations]
+    if 0 < queue[:relations].size
       queue[:api] = "statuses"
       queue[:url] = "http://twitter.com/#{queue[:api]}/#{queue[:target]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
     else
       queue[:api] = "ids"
       queue[:url] = "http://twitter.com/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
     end
+    #pp queue
     return queue
   end
 
   def self.acquire_queue_count(queue_counter)
     results = `ruby #{queue_counter}`
     results = results.split("\n")
-    pp results
+    #pp results
     raise unless 3 == results.size
     fetch_count  = (results.shift).to_i
     parse_count  = (results.shift).to_i

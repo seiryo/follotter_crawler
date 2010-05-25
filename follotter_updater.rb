@@ -30,17 +30,17 @@ class FollotterUpdater < FollotterDatabase
     host_mq = config['HOST_MQ']
 
     AMQP.start(:host => host_mq) do
-      q = MQ.new.queue('updater')
+      q = MQ.queue('updater')
       q.pop do |msg|
         unless msg
           EM.add_timer(1){ q.pop }
         else
           begin
             hash =  Marshal.load(msg)
-            pp hash[:api]
             updater = FollotterUpdater.new(Marshal.load(msg), config)
-            if updater.update_parse_result
-            # 
+            unless updater.update_parse_result
+              #フェッチキュー再発行
+              MQ.queue('fetcher').publish(Marshal.dump(updater.queue))
             end
           rescue => ex
             #
@@ -65,9 +65,10 @@ class FollotterUpdater < FollotterDatabase
       raise "HDB Open Error:" + @hdb.errmsg(ecode)
     end
 
+    result = false
     begin
-      update_ids      if ("ids"      == @queue[:api])
-      update_statuses if ("statuses" == @queue[:api])
+      result = update_ids      if ("ids"      == @queue[:api])
+      result = update_statuses if ("statuses" == @queue[:api])
     rescue => ex
       raise ex
     ensure
@@ -77,26 +78,39 @@ class FollotterUpdater < FollotterDatabase
       end
     end
 
-    return
+    return result
   end
 
   private
 
   def update_ids
     now_ids = @queue[:parse_result]
-    return unless 0 < now_ids.size
+    return true unless 0 < now_ids.size
     before_ids = @queue[:relations] 
 
-    newcomers = (now_ids - before_ids)
+    # next_cursorに従いfetch続行
+    if '0' != @queue[:next_cursor]
+      @queue[:url] = "http://twitter.com/#{@queue[:target]}/#{@queue[:api]}.json?id=#{@queue[:user_id].to_s}&cursor=#{@queue[:next_cursor]}"
+      @queue[:relations]    = (now_ids | before_ids)
+      @queue[:parse_result] = nil
+      @queue[:next_cursor]  = nil
+      return false
+    end
+
+    # relations登録処理
+    newcomers = (now_ids | before_ids)
     newcomers.each do |target_id|
+      f = nil
       #next if target_ids.index(target_id)
       f =   Friend.new if "friends"   == @queue[:target]
       f = Follower.new if "followers" == @queue[:target]
+      raise unless f
       f.user_id    = @queue[:user_id]
       f.target_id  = target_id
       f.created_at = @created_at
       f.save
     end
+    return true
   end
 
   def update_statuses
@@ -105,7 +119,7 @@ class FollotterUpdater < FollotterDatabase
     users_hash = @queue[:parse_result]
 
     user = User.find_by_id(@queue[:user_id])
-    return unless user
+    return true unless user
 
     # 過去の対象ID配列を取得
     before_ids = @queue[:relations]
@@ -137,14 +151,14 @@ class FollotterUpdater < FollotterDatabase
         next
       end
       # 未知のユーザの場合
-      user = User.new
-      user.id                = user_id 
-      user.screen_name       = user_hash[:screen_name]       if user_hash[:screen_name]
-      user.protected         = user_hash[:protected]         if user_hash[:protected]
-      user.statuses_count    = user_hash[:statuses_count]    if user_hash[:statuses_count]
-      user.profile_image_url = user_hash[:profile_image_url] if user_hash[:profile_image_url]
-      user.last_posted_at    = DateTime.now
-      if user.save
+      new_user = User.new
+      new_user.id                = user_id 
+      new_user.screen_name       = user_hash[:screen_name]       if user_hash[:screen_name]
+      new_user.protected         = user_hash[:protected]         if user_hash[:protected]
+      new_user.statuses_count    = user_hash[:statuses_count]    if user_hash[:statuses_count]
+      new_user.profile_image_url = user_hash[:profile_image_url] if user_hash[:profile_image_url]
+      new_user.last_posted_at    = DateTime.now
+      if new_user.save
         hu = { :screen_name       => user_hash[:screen_name],
                :profile_image_url => user_hash[:profile_image_url] }
         @hdb.put(user_id, Marshal.dump(hu))
@@ -152,23 +166,24 @@ class FollotterUpdater < FollotterDatabase
         next
       end
     end
-    return unless 0 < now_ids.size
+    return true unless 0 < now_ids.size
 
     # 比較
     welcome_ids = now_ids - before_ids
     goodbye_ids = before_ids - now_ids
 
     protected_flag = 0
-    protected_flag = 1 if (1 >= before_ids.size || 0 == now_ids.size) 
+    protected_flag = 1 if (0 == before_ids.size || 0 == now_ids.size) 
 
     friend_values   = Array.new
     follower_values = Array.new
     timeline_values = Array.new
     welcome_ids.each do |target_id|
+      next if @queue[:user_id] == target_id
       #next if _find_user_relation(user.id, target_id)
       #unless user_relations.index(target_id)
-        friend_values, follower_values = _acquire_user_value(user.id, target_id, friend_values, follower_values)
-        timeline_values << _acquire_timeline_value(user.id, target_id, protected_flag) if 0 == protected_flag
+      friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
+      timeline_values << _acquire_timeline_value(@queue[:user_id], target_id, protected_flag) if 0 == protected_flag
       #end
     end
 
@@ -184,6 +199,7 @@ class FollotterUpdater < FollotterDatabase
     #queue_id = now_ids.sort_by{rand}.first
     #_create_statuses_queue("friends",   queue_id)
     #_create_statuses_queue("followers", queue_id)
+    return true
   end
 
   private
