@@ -2,6 +2,7 @@ require 'rubygems'
 require 'open-uri'
 require 'yaml'
 require 'webrick'
+require 'oauth'
 require 'amqp'
 require 'mq'
 require 'pp'
@@ -14,12 +15,23 @@ class FollotterFetcher
   def self.start
     Signal.trap('INT') { Carrot.stop }
 
+    # 設定ファイル読込
     config  = YAML.load_file(@@CONFIG_FILE_PATH)
-    
+    # 設定値読込 
     thread_limit = config['FETCH_THREAD_LIMIT'].to_i
     host_mq      = config['HOST_MQ']
-    pp thread_limit
-    pp host_mq
+    # OAUTH認証
+    consumer = OAuth::Consumer.new(
+      config['CONSUMER_KEY'],
+      config['CONSUMER_SECRET'],
+      :site => 'http://twitter.com'
+    )
+    access_token = OAuth::AccessToken.new(
+      consumer,
+      config['ACCESS_TOKEN'],
+      config['ACCESS_TOKEN_SECRET']
+    )
+    # RabbitMQ接続
     carrot = Carrot.new(:host => host_mq )
     q = carrot.queue('fetcher')
     #pp carrot
@@ -34,11 +46,10 @@ class FollotterFetcher
           break if thread_limit > Thread::list.size
           sleep 1
         end
-        Thread.new(msg, config, host_mq) do |m, conf, host|
-          fetcher = FollotterFetcher.new(Marshal.load(m), conf)
+        Thread.new(msg, config, host_mq, access_token) do |m, conf, host, atoken|
+          fetcher = FollotterFetcher.new(Marshal.load(m), conf, atoken)
           if fetcher.fetch_api
             crrt = Carrot.new(:host => host )
-            pp "ok"
             qq = crrt.queue('parser')
             qq.publish(Marshal.dump(fetcher.queue))
             crrt.stop
@@ -50,18 +61,17 @@ class FollotterFetcher
 
   attr_reader :queue
 
-  def initialize(queue, config)
+  def initialize(queue, config, access_token)
     @user     = config['API_USER']
     @password = config['API_PASSWORD']
     @host_mq  = config['HOST_MQ']
-    @queue    = queue
+    @queue        = queue
+    @access_token = access_token 
   end
 
   def fetch_api
     begin
-      @queue[:fetch_result] = open(@queue[:url], :http_basic_authentication => [@user, @password]) do |f|
-        f.read
-      end
+      @queue[:fetch_result] = @access_token.get(@queue[:url])
     rescue Timeout::Error => ex
       return false
     rescue OpenURI::HTTPError => ex

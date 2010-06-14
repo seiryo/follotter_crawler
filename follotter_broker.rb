@@ -6,12 +6,11 @@ require "pp"
 require 'date'
 require 'time'
 require 'parsedate'
-require 'tokyocabinet'
 require 'yaml'
+require 'oauth'
 require 'amqp'
 require 'mq'
-
-include TokyoCabinet
+require 'carrot'
 
 $:.unshift(File.dirname(__FILE__))
 require 'follotter_database'
@@ -25,6 +24,8 @@ class FollotterBroker < FollotterDatabase
     @@HOST_MQ         = config["HOST_MQ"]
     @@HDB_FILE_PATH   = config["HDB_FILE_PATH"]
     @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
+    @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
+    @@CONFIG          = config
 
     ["follotter_fetcher.rb", "follotter_parser.rb", "follotter_updater.rb"].each do |name|
       self.check_process(name)
@@ -32,37 +33,37 @@ class FollotterBroker < FollotterDatabase
 
     fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
 
-    AMQP.start(:host => @@HOST_MQ) do
+    batch = self.create_batch(fetch_count, parse_count, update_count)
+    first_api_limit = batch.api_limit
 
-      batch = self.create_batch(fetch_count, parse_count, update_count)
-      first_api_limit = batch.api_limit
+    return if (0 != (fetch_count + update_count + update_count))
+    #self.optimize_tch
+    return unless 0 < batch.api_limit
 
-      return if (0 != (fetch_count + update_count + update_count))
-      #self.optimize_tch
-      return unless 0 < batch.api_limit
-
-      # アクティブユーザをクロールするためのキューを発行
-      active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit / 4)
-      active_users.each do |au|
-        au_id = au.id
-        au.destroy
-        next unless User.find_by_id(au_id)
-        queues = self.create_queues(au_id)
-        queues.each do |queue|
-          # pp queue
-          MQ.queue('fetcher').publish(Marshal.dump(queue))
-          batch.api_limit -= 1
-        end
+    carrot = Carrot.new(:host => @@HOST_MQ)
+    # アクティブユーザをクロールするためのキューを発行
+    active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit / 2)
+    active_users.each do |au|
+      au_id = au.id
+      au.destroy
+      user = User.find_by_id(au_id)
+      next unless user
+      next unless @@LOWER_LIMIT <= user.statuses_count
+      queues = self.create_queues(au_id)
+      queues.each do |queue|
+        # pp queue
+        qq = carrot.queue('fetcher')
+        qq.publish(Marshal.dump(queue))
+        batch.api_limit -= 1
       end
-
-      # 発行したキューの数を記録し、保存
-      batch.queue = first_api_limit - batch.api_limit
-      batch.save
-
-      # 終了
-      AMQP.stop { EM.stop }
     end
+    carrot.stop
 
+    # 発行したキューの数を記録し、保存
+    batch.queue = first_api_limit - batch.api_limit
+    batch.save
+
+    # 終了
   end
 
   def self.check_process(name)
@@ -146,21 +147,22 @@ class FollotterBroker < FollotterDatabase
   end
 
   def self.acquire_api_limit
+    consumer = OAuth::Consumer.new(
+      @@CONFIG['CONSUMER_KEY'],
+      @@CONFIG['CONSUMER_SECRET'],
+      :site => 'http://twitter.com'
+    )
+    access_token = OAuth::AccessToken.new(
+      consumer,
+      @@CONFIG['ACCESS_TOKEN'],
+      @@CONFIG['ACCESS_TOKEN_SECRET']
+    )
+
     url = "http://twitter.com/account/rate_limit_status.json"
-    doc = self._open_uri(url)
-    res = JSON.parse(doc)
+    response = access_token.get(url)
+    res = JSON.parse(response.body)
     limit = res["remaining_hits"]
     return limit.to_i
-  end
-
-  def self.optimize_tch
-    hdb = HDB::new
-    if !hdb.open(@@HDB_FILE_PATH, HDB::OWRITER | HDB::OCREAT)
-      ecode = hdb.ecode
-      raise "HDB Open Error:" + @hdb.errmsg(ecode)
-    end
-    hdb.optimize
-    hdb.close
   end
 
   private

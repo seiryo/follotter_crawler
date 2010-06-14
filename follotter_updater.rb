@@ -6,13 +6,13 @@ require "pp"
 require 'date'
 require 'time'
 require 'parsedate'
-require 'tokyocabinet'
 require 'yaml'
 require 'webrick'
 require 'amqp'
 require 'mq'
+require 'tokyotyrant'
 
-include TokyoCabinet
+include TokyoTyrant
 
 $:.unshift(File.dirname(__FILE__))
 require 'follotter_database'
@@ -43,7 +43,7 @@ class FollotterUpdater < FollotterDatabase
               MQ.queue('fetcher').publish(Marshal.dump(updater.queue))
             end
           rescue => ex
-            #
+            pp ex
           end
           q.pop
         end
@@ -51,19 +51,25 @@ class FollotterUpdater < FollotterDatabase
     end
   end
 
+  attr_reader :queue
 
   def initialize(queue, config)
     @queue         = queue
-    @hdb_file_path = config["HDB_FILE_PATH"]
+    @host_tt       = config["HOST_TT"]
     @created_at    = Time.now.strftime("%Y-%m-%d %H:%M:%S")
   end
 
   def update_parse_result
-    @hdb = HDB::new
-    if !@hdb.open(@hdb_file_path, HDB::OWRITER | HDB::OCREAT)
-      ecode = @hdb.ecode
-      raise "HDB Open Error:" + @hdb.errmsg(ecode)
+    @rdb = RDB::new
+    if !@rdb.open(@host_tt, 1978)
+      ecode = rdb.ecode
+      raise "rdb open error" + @rdb.errmsg(ecode)
     end
+    #@hdb = HDB::new
+    #if !@hdb.open(@hdb_file_path, HDB::OWRITER | HDB::OCREAT)
+    #  ecode = @hdb.ecode
+    #  raise "HDB Open Error:" + @hdb.errmsg(ecode)
+    #end
 
     result = false
     begin
@@ -72,10 +78,14 @@ class FollotterUpdater < FollotterDatabase
     rescue => ex
       raise ex
     ensure
-      if !@hdb.close
-        ecode = @hdb.ecode
-        raise "HDB Close Error:" + @hdb.errmsg(ecode)
+      if !@rdb.close
+        ecode = @rdb.ecode
+        raise "rdb close error" + @rdb.errmsg(ecode)
       end
+      #if !@hdb.close
+      #  ecode = @hdb.ecode
+      #  raise "HDB Close Error:" + @hdb.errmsg(ecode)
+      #end
     end
 
     return result
@@ -84,6 +94,9 @@ class FollotterUpdater < FollotterDatabase
   private
 
   def update_ids
+    user = User.find_by_id(@queue[:user_id])
+    return true unless user
+
     now_ids = @queue[:parse_result]
     return true unless 0 < now_ids.size
     before_ids = @queue[:relations] 
@@ -99,17 +112,21 @@ class FollotterUpdater < FollotterDatabase
 
     # relations登録処理
     newcomers = (now_ids | before_ids)
+    friend_values   = Array.new
+    follower_values = Array.new
     newcomers.each do |target_id|
-      f = nil
-      #next if target_ids.index(target_id)
-      f =   Friend.new if "friends"   == @queue[:target]
-      f = Follower.new if "followers" == @queue[:target]
-      raise unless f
-      f.user_id    = @queue[:user_id]
-      f.target_id  = target_id
-      f.created_at = @created_at
-      f.save
+      next unless @queue[:user_id] != target_id
+      friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
     end
+
+    sql = "INSERT INTO friends   (user_id, target_id, created_at) VALUES " + friend_values.join(",")
+    ActiveRecord::Base.connection.execute(sql) if 0 < friend_values.size
+
+    sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + follower_values.join(",")
+    ActiveRecord::Base.connection.execute(sql) if 0 < follower_values.size
+
+    _update_relation_count(user, newcomers.size)
+
     return true
   end
 
@@ -126,46 +143,9 @@ class FollotterUpdater < FollotterDatabase
 
     # 現在の対象ID配列を取得
     now_ids = Array.new
-    users_hash.each do |user_id, user_hash|
-      user_id = user_id.to_i
-      next if @queue[:user_id] == user_id
-
-      hdb_user = @hdb.get(user_id)
-      # HDBに存在した場合、情報の更新を確認
-      if hdb_user
-        hu = Marshal.load(hdb_user)
-        if (user_hash[:profile_image_url] != hu[:profile_image_url] ||
-            user_hash[:screen_name] != hu[:screen_name])
-          update_user = User.find_by_id(user_id)
-          next unless update_user
-          # MySQLを更新
-          update_user.screen_name       = hu[:screen_name]       if user_hash[:screen_name]
-          update_user.profile_image_url = hu[:profile_image_url] if user_hash[:profile_image_url]
-          next unless update_user.save
-          # HDBを更新
-          hu[:screen_name]       = user_hash[:screen_name]
-          hu[:profile_image_url] = user_hash[:profile_image_url]
-          @hdb.put(user_id, Marshal.dump(hu))
-        end 
-        now_ids << user_id
-        next
-      end
-      # 未知のユーザの場合
-      new_user = User.new
-      new_user.id                = user_id 
-      new_user.screen_name       = user_hash[:screen_name]       if user_hash[:screen_name]
-      new_user.protected         = user_hash[:protected]         if user_hash[:protected]
-      new_user.statuses_count    = user_hash[:statuses_count]    if user_hash[:statuses_count]
-      new_user.profile_image_url = user_hash[:profile_image_url] if user_hash[:profile_image_url]
-      new_user.last_posted_at    = DateTime.now
-      if new_user.save
-        hu = { :screen_name       => user_hash[:screen_name],
-               :profile_image_url => user_hash[:profile_image_url] }
-        @hdb.put(user_id, Marshal.dump(hu))
-        now_ids << user_id
-        next
-      end
-    end
+    #users_hash.each do |user_id, user_hash|
+    #end
+    now_ids = users_hash.keys
     return true unless 0 < now_ids.size
 
     # 比較
@@ -179,7 +159,9 @@ class FollotterUpdater < FollotterDatabase
     follower_values = Array.new
     timeline_values = Array.new
     welcome_ids.each do |target_id|
-      next if @queue[:user_id] == target_id
+      next unless @queue[:user_id] != target_id
+      next unless users_hash[target_id]
+      next unless _update_user(target_id, users_hash[target_id]) 
       #next if _find_user_relation(user.id, target_id)
       #unless user_relations.index(target_id)
       friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
@@ -196,13 +178,70 @@ class FollotterUpdater < FollotterDatabase
     sql = "INSERT INTO timelines (user_id, target_id, action, created_at, protected) VALUES " + timeline_values.join(",")
     ActiveRecord::Base.connection.execute(sql) if 0 < timeline_values.size
 
-    #queue_id = now_ids.sort_by{rand}.first
-    #_create_statuses_queue("friends",   queue_id)
-    #_create_statuses_queue("followers", queue_id)
+    if 0 < timeline_values.size
+      _update_relation_count(user, (now_ids | before_ids).size)
+    end
+
     return true
   end
 
   private
+
+  def _update_relation_count(user, now_count)
+    before_count = 0
+    before_count = user.friends_count   if "friends"   == @queue[:target]
+    before_count = user.followers_count if "followers" == @queue[:target]
+    return false unless before_count != now_count
+    user.friends_count   = now_count if "friends"   == @queue[:target]
+    user.followers_count = now_count if "followers" == @queue[:target]
+    return user.save
+  end
+
+  def _update_user(user_id, user_hash)
+    user_id = user_id.to_i
+
+    rdb_user = @rdb.get(user_id)
+    if rdb_user
+      # HDBに存在した場合、情報の更新を確認
+      hu = Marshal.load(rdb_user)
+      if (user_hash[:profile_image_url] != hu[:profile_image_url] ||
+          user_hash[:statuses_count]    != hu[:statuses_count]    ||
+          user_hash[:screen_name]       != hu[:screen_name])
+        # 情報の更新があった場合
+        update_user = User.find_by_id(user_id)
+        return false unless update_user
+        # MySQLを更新
+        update_user.screen_name       = hu[:screen_name]       if user_hash[:screen_name]
+        update_user.statuses_count    = hu[:statuses_count]    if user_hash[:statuses_count]
+        update_user.profile_image_url = hu[:profile_image_url] if user_hash[:profile_image_url]
+        return false unless update_user.save
+        # HDBを更新
+        hu[:screen_name]       = user_hash[:screen_name]
+        hu[:statuses_count]    = user_hash[:statuses_count]
+        hu[:profile_image_url] = user_hash[:profile_image_url]
+        @rdb.put(user_id, Marshal.dump(hu))
+      end 
+      return true
+    end
+    # 未知のユーザの場合
+    ## RDB挿入
+    hu = { :screen_name       => user_hash[:screen_name],
+           :statuses_count    => user_hash[:statuses_count],
+           :profile_image_url => user_hash[:profile_image_url] }
+    @rdb.put(user_id, Marshal.dump(hu))
+    ## MySQL挿入
+    new_user = User.new
+    new_user.id                = user_id 
+    new_user.screen_name       = user_hash[:screen_name]       if user_hash[:screen_name]
+    new_user.protected         = user_hash[:protected]         if user_hash[:protected]
+    new_user.statuses_count    = user_hash[:statuses_count]    if user_hash[:statuses_count]
+    new_user.profile_image_url = user_hash[:profile_image_url] if user_hash[:profile_image_url]
+    new_user.last_posted_at    = DateTime.now
+    unless new_user.save
+      return false
+    end
+    return true
+  end
 
   def _acquire_timeline_value(user_id, target_id, is_protected)
     act = nil
