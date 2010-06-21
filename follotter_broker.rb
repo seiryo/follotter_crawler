@@ -26,6 +26,7 @@ class FollotterBroker < FollotterDatabase
     @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
     @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
     @@CONFIG          = config
+    @@REMOVE_STATUS   = config['REMOVE_CRAWL_STATUS']
 
     ["follotter_fetcher.rb", "follotter_parser.rb", "follotter_updater.rb"].each do |name|
       self.check_process(name)
@@ -49,7 +50,8 @@ class FollotterBroker < FollotterDatabase
       user = User.find_by_id(au_id)
       next unless user
       next unless @@LOWER_LIMIT <= user.statuses_count
-      queues = self.create_queues(au_id)
+      remove_flag = self.change_crawl_status_for_remove(user)
+      queues = self.create_queues(user.id, remove_flag)
       queues.each do |queue|
         # pp queue
         qq = carrot.queue('fetcher')
@@ -66,6 +68,17 @@ class FollotterBroker < FollotterDatabase
     # 終了
   end
 
+  def self.change_crawl_status_for_remove(user)
+    if @@REMOVE_STATUS >= user.crawl_status
+      user.crawl_status = 0
+      user.save
+      return true
+    end
+    user.crawl_status += 1
+    user.save
+    return false
+  end
+
   def self.check_process(name)
     count = `ps aux | grep #{name} | grep -v grep | wc -l`
     count = count.chomp.to_i
@@ -73,11 +86,11 @@ class FollotterBroker < FollotterDatabase
     `ruby #{name}`
   end
 
-  def self.create_queues(user_id, target = nil)
+  def self.create_queues(user_id, remove_flag, target = nil)
     unless target
       queues = Array.new
       ["friends", "followers"].each do |t|
-        queues << self.create_queues(user_id, t)
+        queues << self.create_queues(user_id, remove_flag, t)
       end
       return queues
     end
@@ -86,12 +99,14 @@ class FollotterBroker < FollotterDatabase
     queue[:user_id]   = user_id
     queue[:target]    = target
     queue[:relations] = self.acquire_relations(user_id, target)
-    if 0 < queue[:relations].size
-      queue[:api] = "statuses"
-      queue[:url] = "http://twitter.com/#{queue[:api]}/#{queue[:target]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
-    else
+    if (true == remove_flag || 0 == queue[:relations].size)
       queue[:api] = "ids"
       queue[:url] = "http://twitter.com/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
+      queue[:new_relations] = []
+    else
+      queue[:api] = "statuses"
+      queue[:url] = "http://twitter.com/#{queue[:api]}/#{queue[:target]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
+      queue[:new_relations] = []
     end
     #pp queue
     return queue

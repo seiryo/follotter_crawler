@@ -98,34 +98,61 @@ class FollotterUpdater < FollotterDatabase
     return true unless user
 
     now_ids = @queue[:parse_result]
+    now_ids = (now_ids | @queue[:new_relations])
     return true unless 0 < now_ids.size
     before_ids = @queue[:relations] 
 
     # next_cursorに従いfetch続行
     if '0' != @queue[:next_cursor]
-      @queue[:url] = "http://twitter.com/#{@queue[:target]}/#{@queue[:api]}.json?id=#{@queue[:user_id].to_s}&cursor=#{@queue[:next_cursor]}"
-      @queue[:relations]    = (now_ids | before_ids)
-      @queue[:parse_result] = nil
-      @queue[:next_cursor]  = nil
+      @queue[:url]  = "http://twitter.com/#{@queue[:target]}/#{@queue[:api]}.json"
+      @queue[:url] += "?id=#{@queue[:user_id].to_s}&cursor=#{@queue[:next_cursor]}"
+      @queue[:new_relations] = now_ids
+      @queue[:parse_result]  = nil
+      @queue[:next_cursor]   = nil
       return false
     end
 
     # relations登録処理
-    newcomers = (now_ids | before_ids)
-    friend_values   = Array.new
-    follower_values = Array.new
-    newcomers.each do |target_id|
-      next unless @queue[:user_id] != target_id
-      friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
+    if 0 == before_ids.size
+      # 初回のみ登録処理を行う
+      newcomers = (now_ids - before_ids)
+      friend_values   = Array.new
+      follower_values = Array.new
+      newcomers.each do |target_id|
+        next unless @queue[:user_id] != target_id
+        friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
+      end
+
+      sql = "INSERT INTO friends   (user_id, target_id, created_at) VALUES " + friend_values.join(",")
+      ActiveRecord::Base.connection.execute(sql) if 0 < friend_values.size
+
+      sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + follower_values.join(",")
+      ActiveRecord::Base.connection.execute(sql) if 0 < follower_values.size
+
+      _update_relation_count(user, newcomers.size)
+
+      return true
     end
+    # 2回目以降の処理はremoveのあぶり出し
+    removed_user_ids = Array.new
+    status_values    = Array.new
+    (before_ids - now_ids).each do |target_id|
+      next unless @queue[:user_id] != target_id
+      f =   Friend.find_by_user_id_and_target_id(@queue[:user_id], target_id) if "friends"   == @queue[:target]
+      f = Follower.find_by_user_id_and_target_id(@queue[:user_id], target_id) if "followers" == @queue[:target]
+      next unless f
+      f.destroy
+      removed_user_ids << target_id
+      status_values    << _acquire_status_value(@queue[:user_id], target_id)
+    end
+    return true unless 0 < status_values.size
 
-    sql = "INSERT INTO friends   (user_id, target_id, created_at) VALUES " + friend_values.join(",")
-    ActiveRecord::Base.connection.execute(sql) if 0 < friend_values.size
+    sql = "INSERT INTO remove_statuses (user_id, target_id, action, created_at) VALUES " + status_values.join(",")
+    ActiveRecord::Base.connection.execute(sql)
 
-    sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + follower_values.join(",")
-    ActiveRecord::Base.connection.execute(sql) if 0 < follower_values.size
-
-    _update_relation_count(user, newcomers.size)
+    sql  = "INSERT INTO remove_lines (user_id, target_ids, action, created_at) VALUES "
+    sql += _acquire_status_value(@queue[:user_id], "'#{removed_user_ids.join(',')}'")
+    ActiveRecord::Base.connection.execute(sql)
 
     return true
   end
@@ -152,12 +179,9 @@ class FollotterUpdater < FollotterDatabase
     welcome_ids = now_ids - before_ids
     goodbye_ids = before_ids - now_ids
 
-    protected_flag = 0
-    protected_flag = 1 if (0 == before_ids.size || 0 == now_ids.size) 
-
     friend_values   = Array.new
     follower_values = Array.new
-    timeline_values = Array.new
+    status_values   = Array.new
     welcome_ids.each do |target_id|
       next unless @queue[:user_id] != target_id
       next unless users_hash[target_id]
@@ -165,7 +189,7 @@ class FollotterUpdater < FollotterDatabase
       #next if _find_user_relation(user.id, target_id)
       #unless user_relations.index(target_id)
       friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
-      timeline_values << _acquire_timeline_value(@queue[:user_id], target_id, protected_flag) if 0 == protected_flag
+      status_values << _acquire_status_value(@queue[:user_id], target_id)
       #end
     end
 
@@ -175,10 +199,16 @@ class FollotterUpdater < FollotterDatabase
     sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + follower_values.join(",")
     ActiveRecord::Base.connection.execute(sql) if 0 < follower_values.size
 
-    sql = "INSERT INTO timelines (user_id, target_id, action, created_at, protected) VALUES " + timeline_values.join(",")
-    ActiveRecord::Base.connection.execute(sql) if 0 < timeline_values.size
+    sql = "INSERT INTO follow_statuses (user_id, target_id, action, created_at) VALUES " + status_values.join(",")
+    ActiveRecord::Base.connection.execute(sql) if 0 < status_values.size
 
-    if 0 < timeline_values.size
+    if 0 < status_values.size
+      sql  = "INSERT INTO follow_lines (user_id, target_ids, action, created_at) VALUES "
+      sql += _acquire_status_value(@queue[:user_id], "'#{welcome_ids.join(',')}'")
+      ActiveRecord::Base.connection.execute(sql)
+    end
+
+    if 0 < status_values.size
       _update_relation_count(user, (now_ids | before_ids).size)
     end
 
@@ -243,12 +273,12 @@ class FollotterUpdater < FollotterDatabase
     return true
   end
 
-  def _acquire_timeline_value(user_id, target_id, is_protected)
+  def _acquire_status_value(user_id, target_id)
     act = nil
     act = 0 if "friends"   == @queue[:target]
     act = 1 if "followers" == @queue[:target]
     raise   if nil == act
-    return "(#{user_id.to_s}, #{target_id.to_s}, #{act.to_s}, '#{@created_at}', #{is_protected.to_s})"
+    return "(#{user_id.to_s}, #{target_id.to_s}, #{act.to_s}, '#{@created_at}')"
     #return "(#{user_id.to_s}, #{target_id.to_s}, 0, '#{created_at}', #{is_protected.to_s})" if "friends"   == @api_type
     #return "(#{target_id.to_s}, #{user_id.to_s}, 0, '#{created_at}', #{is_protected.to_s})" if "followers" == @api_type
   end

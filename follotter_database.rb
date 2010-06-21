@@ -31,7 +31,16 @@ class FollotterDatabase
     belongs_to :user
   end
 
-  class Timeline < ActiveRecord::Base
+  class FollowStatus < ActiveRecord::Base
+  end
+
+  class FollowLine < ActiveRecord::Base
+  end
+
+  class RemoveStatus < ActiveRecord::Base
+  end
+
+  class RemoveLine < ActiveRecord::Base
   end
 
   class Batch < ActiveRecord::Base
