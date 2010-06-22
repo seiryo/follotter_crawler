@@ -36,7 +36,6 @@ class FollotterUpdater < FollotterDatabase
           EM.add_timer(1){ q.pop }
         else
           begin
-            hash =  Marshal.load(msg)
             updater = FollotterUpdater.new(Marshal.load(msg), config)
             unless updater.update_parse_result
               #フェッチキュー再発行
@@ -176,13 +175,13 @@ class FollotterUpdater < FollotterDatabase
     return true unless 0 < now_ids.size
 
     # 比較
-    welcome_ids = now_ids - before_ids
-    goodbye_ids = before_ids - now_ids
+    welcome_ids = Array.new
+    ##goodbye_ids = before_ids - now_ids
 
     friend_values   = Array.new
     follower_values = Array.new
     status_values   = Array.new
-    welcome_ids.each do |target_id|
+    (now_ids - before_ids).each do |target_id|
       next unless @queue[:user_id] != target_id
       next unless users_hash[target_id]
       next unless _update_user(target_id, users_hash[target_id]) 
@@ -190,7 +189,7 @@ class FollotterUpdater < FollotterDatabase
       #unless user_relations.index(target_id)
       friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
       status_values << _acquire_status_value(@queue[:user_id], target_id)
-      #end
+      welcome_ids << target_id
     end
 
     sql = "INSERT INTO friends   (user_id, target_id, created_at) VALUES " + friend_values.join(",")
@@ -287,13 +286,6 @@ class FollotterUpdater < FollotterDatabase
     value = "(#{user_id.to_s}, #{target_id.to_s}, '#{@created_at}')"
     friend_values   << value if "friends"   == @queue[:target]
     follower_values << value if "followers" == @queue[:target]
-    return friend_values, follower_values
-  end
-
-  def _acquire_target_value(user_id, target_id, friend_values, follower_values)
-    value = "(#{target_id.to_s}, #{user_id.to_s})"
-    follower_values << value if "friends"   == @queue[:target]
-    friend_values   << value if "followers" == @queue[:target]
     return friend_values, follower_values
   end
 

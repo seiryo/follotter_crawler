@@ -34,14 +34,12 @@ class FollotterFetcher
     # RabbitMQ接続
     carrot = Carrot.new(:host => host_mq )
     q = carrot.queue('fetcher')
-    #pp carrot
     loop do
       msg = q.pop(:ack => false)
       unless msg
         sleep 1
         next
       else
-        pp Marshal.load(msg)
         loop do
           break if thread_limit > Thread::list.size
           sleep 1
@@ -71,7 +69,7 @@ class FollotterFetcher
 
   def fetch_api
     begin
-      @queue[:fetch_result] = @access_token.get(@queue[:url])
+      @queue[:fetch_result] = @access_token.get(@queue[:url]).body
     rescue Timeout::Error => ex
       return false
     rescue OpenURI::HTTPError => ex
