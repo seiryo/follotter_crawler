@@ -125,13 +125,17 @@ class FollotterBroker < FollotterDatabase
 
   def self.acquire_relations(user_id, target)
     if "friends" == target
-      relations = Friend.find_all_by_user_id(user_id)
+      all_relations = Friend.find_all_by_user_id(user_id)
     elsif "followers" == target
-      relations = Follower.find_all_by_user_id(user_id)
+      all_relations = Follower.find_all_by_user_id(user_id)
     else
       raise
     end
-    return relations.map { |r| r.target_id }
+    relations = Array.new
+    all_relations.each do |r|
+      relations << r.target_id if 0 == r.removed
+    end
+    return relations
   end
 
   def self.create_batch(fetch_count, parse_count, update_count)

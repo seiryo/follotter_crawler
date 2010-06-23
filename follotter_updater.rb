@@ -137,10 +137,11 @@ class FollotterUpdater < FollotterDatabase
     status_values    = Array.new
     (before_ids - now_ids).each do |target_id|
       next unless @queue[:user_id] != target_id
-      f =   Friend.find_by_user_id_and_target_id(@queue[:user_id], target_id) if "friends"   == @queue[:target]
-      f = Follower.find_by_user_id_and_target_id(@queue[:user_id], target_id) if "followers" == @queue[:target]
-      next unless f
-      f.destroy
+      table_name = @queue[:target] 
+      next if ("friends" != table_name && "followers" != table_name)
+      sql  = "UPDATE #{table_name} SET removed = 1 "
+      sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
+      ActiveRecord::Base.connection.execute(sql)
       removed_user_ids << target_id
       status_values    << _acquire_status_value(@queue[:user_id], target_id)
     end
