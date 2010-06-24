@@ -69,7 +69,7 @@ class FollotterBroker < FollotterDatabase
   end
 
   def self.change_crawl_status_for_remove(user)
-    if @@REMOVE_STATUS >= user.crawl_status
+    if @@REMOVE_STATUS <= user.crawl_status
       user.crawl_status = 0
       user.save
       return true
