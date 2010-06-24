@@ -133,7 +133,7 @@ class FollotterBroker < FollotterDatabase
     end
     relations = Array.new
     all_relations.each do |r|
-      relations << r.target_id if 0 == r.removed
+      relations << r.target_id if false == r.removed
     end
     return relations
   end
