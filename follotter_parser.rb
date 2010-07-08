@@ -53,6 +53,8 @@ class FollotterParser
       return parse_ids
     elsif "statuses" == @queue[:api]
       return parse_statuses
+    elsif "lookup" == @queue[:api]
+      return parse_statuses
     end
     raise
   end
@@ -79,7 +81,13 @@ class FollotterParser
       new_user[:statuses_count]    = user_hash[target_id]["statuses_count"]
       new_user[:profile_image_url] = user_hash[target_id]["profile_image_url"]
       #new_user["last_posted_at"]    = DateTime.now
-      new_user[:is_crawl_target]   = true
+      new_user[:friends_count]     = user_hash[target_id]["friends_count"]
+      new_user[:followers_count]   = user_hash[target_id]["followers_count"]
+      new_user[:friends_count]     = user_hash[target_id]["friends_count"]
+      new_user[:location]          = user_hash[target_id]["location"]
+      new_user[:description]       = user_hash[target_id]["description"]
+      new_user[:url]               = user_hash[target_id]["url"]
+      #new_user[:is_crawl_target]   = true
       # 
       results_hash[target_id] = new_user
     end

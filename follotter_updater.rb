@@ -39,7 +39,13 @@ class FollotterUpdater < FollotterDatabase
             updater = FollotterUpdater.new(Marshal.load(msg), config)
             unless updater.update_parse_result
               #フェッチキュー再発行
-              MQ.queue('fetcher').publish(Marshal.dump(updater.queue))
+              if "lookup" == updater.queue[:api]
+                updater.queue[:next_queues].each do |next_queue|
+                  MQ.queue('fetcher').publish(Marshal.dump(next_queue))
+                end
+              else
+                MQ.queue('fetcher').publish(Marshal.dump(updater.queue))
+              end
             end
           rescue => ex
             pp ex
@@ -64,16 +70,12 @@ class FollotterUpdater < FollotterDatabase
       ecode = rdb.ecode
       raise "rdb open error" + @rdb.errmsg(ecode)
     end
-    #@hdb = HDB::new
-    #if !@hdb.open(@hdb_file_path, HDB::OWRITER | HDB::OCREAT)
-    #  ecode = @hdb.ecode
-    #  raise "HDB Open Error:" + @hdb.errmsg(ecode)
-    #end
 
     result = false
     begin
       result = update_ids      if ("ids"      == @queue[:api])
       result = update_statuses if ("statuses" == @queue[:api])
+      result = update_statuses if ("lookup" == @queue[:api])
     rescue => ex
       raise ex
     ensure
@@ -81,16 +83,65 @@ class FollotterUpdater < FollotterDatabase
         ecode = @rdb.ecode
         raise "rdb close error" + @rdb.errmsg(ecode)
       end
-      #if !@hdb.close
-      #  ecode = @hdb.ecode
-      #  raise "HDB Close Error:" + @hdb.errmsg(ecode)
-      #end
     end
 
     return result
   end
 
   private
+
+  def update_lookup
+    @queue[:next_queues] = Array.new
+    users_hash = @queue[:parse_result]
+    users_hash.each do |user_id, user_hash|
+      user_id = user_id.to_i
+      next unless @queue[:lookup_users_hash].has_key?(user_id)
+      #ユーザ情報更新
+
+      ## MySQL更新
+      update_user = @queue[:lookup_users_hash][user_id]
+      next unless self.judge_changing(new_user, user_hash)
+      update_user = User.set_user_hash(update_user, user_hash) 
+      update_user.save
+      ## RDB更新
+      hu = { :screen_name       => user_hash[:screen_name],
+             :statuses_count    => user_hash[:statuses_count],
+             :profile_image_url => user_hash[:profile_image_url] }
+      @rdb.put(user_id, Marshal.dump(hu))
+
+      _acquire_next_crawl_hash(@queue[:lookup_relations][user_id], user_hash).each do |target, api|
+        queue = Hash.new
+        queue[:user_id]   = user_id
+        queue[:target]    = target.to_s
+        queue[:relations] = @queue[:lookup_relations][user_id][target]
+        queue[:api] = api
+        queue[:new_relations] = []
+        if    ("ids" == api)
+          queue[:url] = "http://api.twitter.com/1/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
+        elsif ("statuses" == api)
+          queue[:url] = "http://api.twitter.com/1/#{queue[:api]}/#{queue[:target]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
+        end 
+        @queue[:next_queues] << queue
+      end
+    end
+    return true if 0 == @queue[:next_queues].size
+    return false
+  end
+
+  def _acquire_next_crawl_hash(lookup_relations, user_hash)
+    next_hash = Hash.new
+    if    (lookup_relations[:friends].size < user_hash[:friends_count].to_i)
+      next_hash[:friends] = "ids"
+    elsif (lookup_relations[:friends].size > user_hash[:friends_count].to_i)
+      next_hash[:friends] = "statuses"
+    end
+    if    (lookup_relations[:followers].size < user_hash[:friends_count].to_i)
+      next_hash[:followers] = "ids"
+    elsif (lookup_relations[:followers].size > user_hash[:friends_count].to_i)
+      next_hash[:followers] = "statuses"
+    end
+    return next_hash
+  end
 
   def update_ids
     user = User.find_by_id(@queue[:user_id])
@@ -103,7 +154,7 @@ class FollotterUpdater < FollotterDatabase
 
     # next_cursorに従いfetch続行
     if '0' != @queue[:next_cursor]
-      @queue[:url]  = "http://twitter.com/#{@queue[:target]}/#{@queue[:api]}.json"
+      @queue[:url]  = "http://api.twitter.com/1/#{@queue[:target]}/#{@queue[:api]}.json"
       @queue[:url] += "?id=#{@queue[:user_id].to_s}&cursor=#{@queue[:next_cursor]}"
       @queue[:new_relations] = now_ids
       @queue[:parse_result]  = nil
@@ -241,9 +292,7 @@ class FollotterUpdater < FollotterDatabase
         update_user = User.find_by_id(user_id)
         return false unless update_user
         # MySQLを更新
-        update_user.screen_name       = hu[:screen_name]       if user_hash[:screen_name]
-        update_user.statuses_count    = hu[:statuses_count]    if user_hash[:statuses_count]
-        update_user.profile_image_url = hu[:profile_image_url] if user_hash[:profile_image_url]
+        update_user = User.set_user_hash(update_user, user_hash) 
         return false unless update_user.save
         # HDBを更新
         hu[:screen_name]       = user_hash[:screen_name]
@@ -261,12 +310,9 @@ class FollotterUpdater < FollotterDatabase
     @rdb.put(user_id, Marshal.dump(hu))
     ## MySQL挿入
     new_user = User.new
-    new_user.id                = user_id 
-    new_user.screen_name       = user_hash[:screen_name]       if user_hash[:screen_name]
-    new_user.protected         = user_hash[:protected]         if user_hash[:protected]
-    new_user.statuses_count    = user_hash[:statuses_count]    if user_hash[:statuses_count]
-    new_user.profile_image_url = user_hash[:profile_image_url] if user_hash[:profile_image_url]
-    new_user.last_posted_at    = DateTime.now
+    new_user.id             = user_id
+    new_user                = User.set_user_hash(new_user, user_hash) 
+    new_user.last_posted_at = DateTime.now
     unless new_user.save
       return false
     end

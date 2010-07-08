@@ -26,11 +26,6 @@ class FollotterBroker < FollotterDatabase
     @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
     @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
     @@CONFIG          = config
-    @@REMOVE_STATUS   = config['REMOVE_CRAWL_STATUS']
-
-    ["follotter_fetcher.rb", "follotter_parser.rb", "follotter_updater.rb"].each do |name|
-      self.check_process(name)
-    end
 
     fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
 
@@ -43,21 +38,29 @@ class FollotterBroker < FollotterDatabase
 
     carrot = Carrot.new(:host => @@HOST_MQ)
     # アクティブユーザをクロールするためのキューを発行
-    active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit / 2)
+    crawl_users = Array.new
+    active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit / 30)
     active_users.each do |au|
       au_id = au.id
       au.destroy
       user = User.find_by_id(au_id)
       next unless user
       next unless @@LOWER_LIMIT <= user.statuses_count
-      remove_flag = self.change_crawl_status_for_remove(user)
-      queues = self.create_queues(user.id, remove_flag)
-      queues.each do |queue|
-        # pp queue
-        qq = carrot.queue('fetcher')
-        qq.publish(Marshal.dump(queue))
-        batch.api_limit -= 1
-      end
+
+      crawl_users << user
+      next if 100 > crawl_users.size
+
+      queue = self.create_queue(crawl_users)
+      qq = carrot.queue('fetcher')
+      qq.publish(Marshal.dump(queue))
+      batch.api_limit -= 1
+      crawl_users = Array.new
+    end
+    if 0 < crawl_users.size
+      self.create_queue(carrot, crawl_users)
+      qq = carrot.queue('fetcher')
+      qq.publish(Marshal.dump(queue))
+      batch.api_limit -= 1
     end
     carrot.stop
 
@@ -68,17 +71,6 @@ class FollotterBroker < FollotterDatabase
     # 終了
   end
 
-  def self.change_crawl_status_for_remove(user)
-    if @@REMOVE_STATUS <= user.crawl_status
-      user.crawl_status = 0
-      user.save
-      return true
-    end
-    user.crawl_status += 1
-    user.save
-    return false
-  end
-
   def self.check_process(name)
     count = `ps aux | grep #{name} | grep -v grep | wc -l`
     count = count.chomp.to_i
@@ -86,29 +78,22 @@ class FollotterBroker < FollotterDatabase
     `ruby #{name}`
   end
 
-  def self.create_queues(user_id, remove_flag, target = nil)
-    unless target
-      queues = Array.new
-      ["friends", "followers"].each do |t|
-        queues << self.create_queues(user_id, remove_flag, t)
-      end
-      return queues
+  def self.create_queue(crawl_users)
+    queue = Hash.new
+    #queue[:user_id]   = false
+    #queue[:target]    = false
+    queue[:api] = "lookup"
+    queue[:lookup_users_hash] = Hash.new
+    queue[:lookup_relations]  = Hash.new
+
+    crawl_users.each do |user|
+      queue[:lookup_users_hash][user.id] = user
+      queue[:lookup_relations][user.id]  = self.acquire_relations(user.id)
     end
 
-    queue = Hash.new
-    queue[:user_id]   = user_id
-    queue[:target]    = target
-    queue[:relations] = self.acquire_relations(user_id, target)
-    if (true == remove_flag || 0 == queue[:relations].size)
-      queue[:api] = "ids"
-      queue[:url] = "http://twitter.com/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
-      queue[:new_relations] = []
-    else
-      queue[:api] = "statuses"
-      queue[:url] = "http://twitter.com/#{queue[:api]}/#{queue[:target]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
-      queue[:new_relations] = []
-    end
-    #pp queue
+    user_ids = crawl_users.map{ |u| u.id }
+    queue[:url] = "http://api.twitter.com/1/users/lookup.json?user_id=#{user_ids.join(",")}"
+    queue[:new_relations] = []
     return queue
   end
 
@@ -123,17 +108,16 @@ class FollotterBroker < FollotterDatabase
     return fetch_count, parse_count, update_count
   end
 
-  def self.acquire_relations(user_id, target)
-    if "friends" == target
-      all_relations = Friend.find_all_by_user_id(user_id)
-    elsif "followers" == target
-      all_relations = Follower.find_all_by_user_id(user_id)
-    else
-      raise
+  def self.acquire_relations(user_id)
+    relations = Hash.new
+    relations[:friends]   = Array.new
+    relations[:followers] = Array.new
+
+    Friend.find_all_by_user_id(user_id).each do |f|
+      relations[:friends] << f.target_id if false == f.removed
     end
-    relations = Array.new
-    all_relations.each do |r|
-      relations << r.target_id if false == r.removed
+    Follower.find_all_by_user_id(user_id).each do |f|
+      relations[:followers] << f.target_id if false == f.removed
     end
     return relations
   end
@@ -177,29 +161,14 @@ class FollotterBroker < FollotterDatabase
       @@CONFIG['ACCESS_TOKEN_SECRET']
     )
 
-    url = "http://twitter.com/account/rate_limit_status.json"
+    url = "http://api.twitter.com/1/account/rate_limit_status.json"
     response = access_token.get(url)
+    raise if 300 <= response.code.to_i
     res = JSON.parse(response.body)
     limit = res["remaining_hits"]
     return limit.to_i
   end
 
-  private
-
-  def self._open_uri(url)
-    begin
-      doc = open(url, :http_basic_authentication => [@@API_USER, @@API_PASSWORD]) do |f|
-        f.read
-      end
-    rescue => ex
-      raise ex
-    rescue Timeout::Error => ex
-      raise ex
-    rescue OpenURI::HTTPError => ex
-      raise ex
-    end
-    return doc
-  end
 end
 
 FollotterBroker.start

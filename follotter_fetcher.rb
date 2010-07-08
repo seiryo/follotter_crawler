@@ -68,15 +68,9 @@ class FollotterFetcher
   end
 
   def fetch_api
-    begin
-      @queue[:fetch_result] = @access_token.get(@queue[:url]).body
-    rescue Timeout::Error => ex
-      return false
-    rescue OpenURI::HTTPError => ex
-      return false
-    rescue => ex
-      return false
-    end
+    result = @access_token.get(@queue[:url])
+    return false if 300 <= result.code.to_i 
+    @queue[:fetch_result] = result.body
     return false if "" == @queue[:fecth_result]
     return true
   end
