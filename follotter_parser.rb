@@ -116,6 +116,7 @@ class FollotterParser
       new_user[:location]          = user_hash[target_id]["location"]
       new_user[:description]       = user_hash[target_id]["description"]
       new_user[:url]               = user_hash[target_id]["url"]
+      new_user[:name]              = user_hash[target_id]["name"]
       #new_user[:is_crawl_target]   = true
       # 
       results_hash[target_id] = new_user

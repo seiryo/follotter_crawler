@@ -65,11 +65,11 @@ class FollotterUpdater < FollotterDatabase
   end
 
   def update_parse_result
-    @rdb = RDB::new
-    if !@rdb.open(@host_tt, 1978)
-      ecode = rdb.ecode
-      raise "rdb open error" + @rdb.errmsg(ecode)
-    end
+    #@rdb = RDB::new
+    #if !@rdb.open(@host_tt, 1978)
+    #  ecode = rdb.ecode
+    #  raise "rdb open error" + @rdb.errmsg(ecode)
+    #end
 
     result = false
     begin
@@ -79,10 +79,10 @@ class FollotterUpdater < FollotterDatabase
     rescue => ex
       raise ex
     ensure
-      if !@rdb.close
-        ecode = @rdb.ecode
-        raise "rdb close error" + @rdb.errmsg(ecode)
-      end
+      #if !@rdb.close
+      #  ecode = @rdb.ecode
+      #  raise "rdb close error" + @rdb.errmsg(ecode)
+      #end
     end
 
     return result
@@ -101,19 +101,25 @@ class FollotterUpdater < FollotterDatabase
       ## MySQL更新
       update_user = @queue[:lookup_users_hash][user_id]
       next unless User.judge_changing(update_user, user_hash)
+      lookup_values = _acquire_lookup_value(update_user, user_hash)
+      if 0 < lookup_values.size
+        sql  = "INSERT INTO follow_lines (user_id, target_ids, action, created_at) VALUES "
+        sql += lookup_values.join(",")
+        ActiveRecord::Base.connection.execute(sql)
+      end
       update_user = User.set_user_hash(update_user, user_hash) 
       update_user.save
       ## RDB更新
-      hu = { :screen_name       => user_hash[:screen_name],
-             :statuses_count    => user_hash[:statuses_count],
-             :profile_image_url => user_hash[:profile_image_url] }
-      @rdb.put(user_id, Marshal.dump(hu))
+      #hu = { :screen_name       => user_hash[:screen_name],
+      #       :statuses_count    => user_hash[:statuses_count],
+      #       :profile_image_url => user_hash[:profile_image_url] }
+      #@rdb.put(user_id, Marshal.dump(hu))
 
       _acquire_next_crawl_hash(@queue[:lookup_relations][user_id][:normal], user_hash).each do |target, api|
-        queue = Hash.new
-        queue[:user_id] = user_id
-        queue[:target]  = target.to_s
-        queue[:api]     = api
+        queue                    = Hash.new
+        queue[:user_id]          = user_id
+        queue[:target]           = target.to_s
+        queue[:api]              = api
         queue[:relations]        = @queue[:lookup_relations][user_id][:normal][target]
         queue[:remove_relations] = @queue[:lookup_relations][user_id][:remove][target]
         queue[:new_relations]    = []
@@ -127,6 +133,27 @@ class FollotterUpdater < FollotterDatabase
     end
     return true if 0 == @queue[:next_queues].size
     return false
+  end
+
+  def _acquire_lookup_value(user, user_hash)
+    return_values = Array.new
+    value_hash    = Hash.new
+    user_hash.each do |key, value|
+      before_value = User.get_param_from_key(user, key) 
+      next if (nil == value || nil == before_value)
+      next if (value == before_value)
+      act = nil
+      act = 9 if :screen_name       == key
+      act = 8 if :name              == key
+      act = 7 if :location          == key
+      act = 6 if :description       == key
+      act = 5 if :profile_image_url == key
+      act = 4 if :url               == key
+      next    if nil == act
+      target_ids = [value, before_value].join("\t\n")
+      return_values << "(#{user.id.to_s}, #{target_ids}, #{act.to_s}, '#{@created_at}')"
+    end
+    return return_values
   end
 
   def _acquire_next_crawl_hash(lookup_relations, user_hash)
@@ -180,7 +207,7 @@ class FollotterUpdater < FollotterDatabase
       sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + follower_values.join(",")
       ActiveRecord::Base.connection.execute(sql) if 0 < follower_values.size
 
-      _update_relation_count(user, newcomers.size)
+      #_update_relation_count(user, newcomers.size)
 
       return true
     end
@@ -246,6 +273,7 @@ class FollotterUpdater < FollotterDatabase
       if nil != @queue[:remove_relations].index(target_id)
         sql  = "UPDATE #{table_name} SET removed = 0 "
         sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
+        status_values << _acquire_status_value(@queue[:user_id], target_id)
         next
       end
       #next if _find_user_relation(user.id, target_id)
@@ -271,7 +299,7 @@ class FollotterUpdater < FollotterDatabase
     end
 
     if 0 < status_values.size
-      _update_relation_count(user, (now_ids | before_ids).size)
+      #_update_relation_count(user, (now_ids | before_ids).size)
     end
 
     return true
@@ -313,8 +341,6 @@ class FollotterUpdater < FollotterDatabase
     act = 1 if "followers" == @queue[:target]
     raise   if nil == act
     return "(#{user_id.to_s}, #{target_id.to_s}, #{act.to_s}, '#{@created_at}')"
-    #return "(#{user_id.to_s}, #{target_id.to_s}, 0, '#{created_at}', #{is_protected.to_s})" if "friends"   == @api_type
-    #return "(#{target_id.to_s}, #{user_id.to_s}, 0, '#{created_at}', #{is_protected.to_s})" if "followers" == @api_type
   end
 
   def _acquire_user_value(user_id, target_id, friend_values, follower_values)

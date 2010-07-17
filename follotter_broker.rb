@@ -61,7 +61,7 @@ class FollotterBroker < FollotterDatabase
   def self.enqueue_lookup(carrot, batch)
     crawl_users = Array.new
     active_users = ActiveUser.find(:all, :order => 'updated DESC',
-                                   :limit => 100 * batch.api_limit)
+                                   :limit => batch.api_limit)
     active_users.each do |au|
       au_id = au.id
       au.destroy
