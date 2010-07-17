@@ -23,6 +23,14 @@ class FollotterDatabase
     has_many :friends
     has_many :followers
 
+    def self.acquire_users_hash(user_ids)
+      users_hash = Hash.new
+      User.find(:all, :conditions => ["id IN (?)", user_ids]).each do |u|
+        users_hash[u.id] = u
+      end
+      return users_hash
+    end
+
     def self.judge_changing(new_user, user_hash)
       return ( new_user.screen_name       != user_hash[:screen_name]       ||
                new_user.statuses_count    != user_hash[:statuses_count]    ||

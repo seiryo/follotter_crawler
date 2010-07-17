@@ -8,6 +8,9 @@ require 'mq'
 require 'pp'
 require 'carrot'
 
+$:.unshift(File.dirname(__FILE__))
+require 'follotter_database'
+
 class FollotterFetcher
 
   @@CONFIG_FILE_PATH = '/home/seiryo/work/follotter/follotter_config.yml'

@@ -27,19 +27,41 @@ class FollotterBroker < FollotterDatabase
     @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
     @@CONFIG          = config
 
-    fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
+    broke_count, fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
 
-    batch = self.create_batch(fetch_count, parse_count, update_count)
+    batch = self.create_batch(broke_count, fetch_count, parse_count, update_count)
     first_api_limit = batch.api_limit
 
     return if (0 != (fetch_count + update_count + update_count))
     #self.optimize_tch
     return unless 0 < batch.api_limit
 
+    # RabbitMQ接続
     carrot = Carrot.new(:host => @@HOST_MQ)
+
+    # updater(lookup)で出力されたキューを再発行
+    if 0 < broke_count
+      batch = self.enqueue_relation(carrot, batch)
+    end
     # アクティブユーザをクロールするためのキューを発行
+    if 0 < batch.api_limit
+      batch = self.enqueue_lookup(carrot, batch)
+    end
+
+    # RabbitMQ切断
+    carrot.stop
+
+    # 発行したキューの数を記録し、保存
+    batch.queue     = first_api_limit - batch.api_limit
+    batch.api_limit = first_api_limit
+    batch.save
+    # 終了
+  end
+
+  def self.enqueue_lookup(carrot, batch)
     crawl_users = Array.new
-    active_users = ActiveUser.find(:all, :order => 'updated DESC', :limit => batch.api_limit / 30)
+    active_users = ActiveUser.find(:all, :order => 'updated DESC',
+                                   :limit => 100 * batch.api_limit)
     active_users.each do |au|
       au_id = au.id
       au.destroy
@@ -57,18 +79,24 @@ class FollotterBroker < FollotterDatabase
       crawl_users = Array.new
     end
     if 0 < crawl_users.size
-      self.create_queue(carrot, crawl_users)
+      self.create_queue(crawl_users)
       qq = carrot.queue('fetcher')
       qq.publish(Marshal.dump(queue))
       batch.api_limit -= 1
     end
-    carrot.stop
+    return batch
+  end
 
-    # 発行したキューの数を記録し、保存
-    batch.queue = first_api_limit - batch.api_limit
-    batch.save
-
-    # 終了
+  def self.enqueue_relation(carrot, batch)
+    broke = carrot.queue('broker')
+    fetch = carrot.queue('fetcher')
+    while batch.api_limit > 0
+      msg = broke.pop(:ack => false)
+      break unless msg
+      fetch.publish(msg)
+      batch.api_limit -= 1
+    end
+    return batch
   end
 
   def self.check_process(name)
@@ -93,7 +121,7 @@ class FollotterBroker < FollotterDatabase
 
     user_ids = crawl_users.map{ |u| u.id }
     queue[:url] = "http://api.twitter.com/1/users/lookup.json?user_id=#{user_ids.join(",")}"
-    queue[:new_relations] = []
+    #queue[:new_relations] = []
     return queue
   end
 
@@ -101,28 +129,35 @@ class FollotterBroker < FollotterDatabase
     results = `ruby #{queue_counter}`
     results = results.split("\n")
     #pp results
-    raise unless 3 == results.size
+    raise unless 4 == results.size
+    broke_count  = (results.shift).to_i
     fetch_count  = (results.shift).to_i
     parse_count  = (results.shift).to_i
     update_count = (results.shift).to_i
-    return fetch_count, parse_count, update_count
+    return broke_count, fetch_count, parse_count, update_count
   end
 
   def self.acquire_relations(user_id)
     relations = Hash.new
-    relations[:friends]   = Array.new
-    relations[:followers] = Array.new
+    relations[:normal] = Hash.new
+    relations[:remove] = Hash.new
+    relations[:normal][:friends]   = Array.new
+    relations[:normal][:followers] = Array.new
+    relations[:remove][:friends]   = Array.new
+    relations[:remove][:followers] = Array.new
 
     Friend.find_all_by_user_id(user_id).each do |f|
-      relations[:friends] << f.target_id if false == f.removed
+      relations[:normal][:friends] << f.target_id if false == f.removed
+      relations[:remove][:friends] << f.target_id if true  == f.removed
     end
     Follower.find_all_by_user_id(user_id).each do |f|
-      relations[:followers] << f.target_id if false == f.removed
+      relations[:normal][:followers] << f.target_id if false == f.removed
+      relations[:remove][:followers] << f.target_id if true  == f.removed
     end
     return relations
   end
 
-  def self.create_batch(fetch_count, parse_count, update_count)
+  def self.create_batch(broke_count, fetch_count, parse_count, update_count)
     # 未クロールのアクティブユーザ数カウント
     begin
       finish_count = ActiveUser.count
@@ -142,6 +177,7 @@ class FollotterBroker < FollotterDatabase
     batch = Batch.create(
               :api_limit => api_limit,
               :finisher  => finish_count,
+              :broker    => broke_count,
               :fetcher   => fetch_count,
               :parser    => parse_count,
               :updater   => update_count)

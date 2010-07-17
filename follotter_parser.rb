@@ -10,6 +10,9 @@ require 'webrick'
 require 'amqp'
 require 'mq'
 
+$:.unshift(File.dirname(__FILE__))
+require 'follotter_database'
+
 class FollotterParser
 
   @@CONFIG_FILE_PATH = '/home/seiryo/work/follotter/follotter_config.yml'
@@ -54,12 +57,30 @@ class FollotterParser
     elsif "statuses" == @queue[:api]
       return parse_statuses
     elsif "lookup" == @queue[:api]
-      return parse_statuses
+      return parse_lookup
     end
     raise
   end
 
   private
+
+  def parse_lookup
+    # JSONパース
+    user_hash = Hash.new
+    json      = JSON.parse(@queue[:fetch_result])
+    @queue[:fetch_result] = nil
+    json.each do |json_user|
+      next unless json_user["id"]
+      user_hash[json_user["id"].to_i] = json_user
+    end
+    return false unless user_hash.size > 0
+
+    results_hash = _acquire_results_hash(user_hash)
+    #cursor = json["next_cursor"]
+    return false unless 0 < results_hash.size
+    @queue[:parse_result] = results_hash
+    return true
+  end
 
   def parse_statuses
     # JSONパース
@@ -72,6 +93,14 @@ class FollotterParser
     end
     return false unless user_hash.size > 0
 
+    results_hash = _acquire_results_hash(user_hash)
+    #cursor = json["next_cursor"]
+    return false unless 0 < results_hash.size
+    @queue[:parse_result] = results_hash
+    return true
+  end
+
+  def _acquire_results_hash(user_hash)
     results_hash = Hash.new
     user_hash.keys.each do |target_id|
       new_user                     = Hash.new
@@ -91,11 +120,9 @@ class FollotterParser
       # 
       results_hash[target_id] = new_user
     end
-    #cursor = json["next_cursor"]
-    return false unless 0 < results_hash.size
-    @queue[:parse_result] = results_hash
-    return true
+    return results_hash
   end
+
 
   # APIを叩いてフレンドなりフォロワーなりの配列を返す(再帰アリ)
   def parse_ids

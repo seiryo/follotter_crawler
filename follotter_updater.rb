@@ -41,7 +41,7 @@ class FollotterUpdater < FollotterDatabase
               #フェッチキュー再発行
               if "lookup" == updater.queue[:api]
                 updater.queue[:next_queues].each do |next_queue|
-                  MQ.queue('fetcher').publish(Marshal.dump(next_queue))
+                  MQ.queue('broker').publish(Marshal.dump(next_queue))
                 end
               else
                 MQ.queue('fetcher').publish(Marshal.dump(updater.queue))
@@ -75,7 +75,7 @@ class FollotterUpdater < FollotterDatabase
     begin
       result = update_ids      if ("ids"      == @queue[:api])
       result = update_statuses if ("statuses" == @queue[:api])
-      result = update_statuses if ("lookup" == @queue[:api])
+      result = update_lookup   if ("lookup" == @queue[:api])
     rescue => ex
       raise ex
     ensure
@@ -100,7 +100,7 @@ class FollotterUpdater < FollotterDatabase
 
       ## MySQL更新
       update_user = @queue[:lookup_users_hash][user_id]
-      next unless self.judge_changing(new_user, user_hash)
+      next unless User.judge_changing(update_user, user_hash)
       update_user = User.set_user_hash(update_user, user_hash) 
       update_user.save
       ## RDB更新
@@ -109,13 +109,14 @@ class FollotterUpdater < FollotterDatabase
              :profile_image_url => user_hash[:profile_image_url] }
       @rdb.put(user_id, Marshal.dump(hu))
 
-      _acquire_next_crawl_hash(@queue[:lookup_relations][user_id], user_hash).each do |target, api|
+      _acquire_next_crawl_hash(@queue[:lookup_relations][user_id][:normal], user_hash).each do |target, api|
         queue = Hash.new
-        queue[:user_id]   = user_id
-        queue[:target]    = target.to_s
-        queue[:relations] = @queue[:lookup_relations][user_id][target]
-        queue[:api] = api
-        queue[:new_relations] = []
+        queue[:user_id] = user_id
+        queue[:target]  = target.to_s
+        queue[:api]     = api
+        queue[:relations]        = @queue[:lookup_relations][user_id][:normal][target]
+        queue[:remove_relations] = @queue[:lookup_relations][user_id][:remove][target]
+        queue[:new_relations]    = []
         if    ("ids" == api)
           queue[:url] = "http://api.twitter.com/1/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
         elsif ("statuses" == api)
@@ -190,6 +191,7 @@ class FollotterUpdater < FollotterDatabase
       next unless @queue[:user_id] != target_id
       table_name = @queue[:target] 
       next if ("friends" != table_name && "followers" != table_name)
+      next if nil != @queue[:remove_relations].index(target_id)
       sql  = "UPDATE #{table_name} SET removed = 1 "
       sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
       ActiveRecord::Base.connection.execute(sql)
@@ -233,10 +235,19 @@ class FollotterUpdater < FollotterDatabase
     friend_values   = Array.new
     follower_values = Array.new
     status_values   = Array.new
-    (now_ids - before_ids).each do |target_id|
+
+    # 新参UserHash取得
+    newcomer_ids  = (now_ids - before_ids)
+    newcomer_hash = User.acquire_users_hash(newcomer_ids)
+    newcomer_ids.each do |target_id|
       next unless @queue[:user_id] != target_id
       next unless users_hash[target_id]
-      next unless _update_user(target_id, users_hash[target_id]) 
+      next unless _update_user(target_id, users_hash[target_id], newcomer_hash[target_id]) 
+      if nil != @queue[:remove_relations].index(target_id)
+        sql  = "UPDATE #{table_name} SET removed = 0 "
+        sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
+        next
+      end
       #next if _find_user_relation(user.id, target_id)
       #unless user_relations.index(target_id)
       friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
@@ -278,38 +289,15 @@ class FollotterUpdater < FollotterDatabase
     return user.save
   end
 
-  def _update_user(user_id, user_hash)
+  def _update_user(user_id, user_hash, user_model)
     user_id = user_id.to_i
 
-    rdb_user = @rdb.get(user_id)
-    if rdb_user
-      # HDBに存在した場合、情報の更新を確認
-      hu = Marshal.load(rdb_user)
-      if (user_hash[:profile_image_url] != hu[:profile_image_url] ||
-          user_hash[:statuses_count]    != hu[:statuses_count]    ||
-          user_hash[:screen_name]       != hu[:screen_name])
-        # 情報の更新があった場合
-        update_user = User.find_by_id(user_id)
-        return false unless update_user
-        # MySQLを更新
-        update_user = User.set_user_hash(update_user, user_hash) 
-        return false unless update_user.save
-        # HDBを更新
-        hu[:screen_name]       = user_hash[:screen_name]
-        hu[:statuses_count]    = user_hash[:statuses_count]
-        hu[:profile_image_url] = user_hash[:profile_image_url]
-        @rdb.put(user_id, Marshal.dump(hu))
-      end 
+    if user_model
       return true
     end
     # 未知のユーザの場合
-    ## RDB挿入
-    hu = { :screen_name       => user_hash[:screen_name],
-           :statuses_count    => user_hash[:statuses_count],
-           :profile_image_url => user_hash[:profile_image_url] }
-    @rdb.put(user_id, Marshal.dump(hu))
     ## MySQL挿入
-    new_user = User.new
+    new_user                = User.new
     new_user.id             = user_id
     new_user                = User.set_user_hash(new_user, user_hash) 
     new_user.last_posted_at = DateTime.now
