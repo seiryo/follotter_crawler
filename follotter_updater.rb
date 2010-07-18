@@ -143,6 +143,11 @@ class FollotterUpdater < FollotterDatabase
       before_value = User.get_param_from_key(user, key) 
       next if (nil == value || nil == before_value)
       next if (value == before_value)
+      if :profile_image_url == key
+        now_icon =        value.split("/").slice(4,2).join("/")
+        old_icon = before_value.split("/").slice(4,2).join("/")
+        next if now_icon == old_icon
+      end
       act = nil
       act = 9 if :screen_name       == key
       act = 8 if :name              == key
