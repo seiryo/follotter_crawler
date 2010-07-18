@@ -25,12 +25,15 @@ class FollotterBroker < FollotterDatabase
     @@HDB_FILE_PATH   = config["HDB_FILE_PATH"]
     @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
     @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
+    @@STORE_API_LIMIT = config['STORE_API_LIMIT']
     @@CONFIG          = config
 
     broke_count, fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
 
     batch = self.create_batch(broke_count, fetch_count, parse_count, update_count)
     first_api_limit = batch.api_limit
+    # API制限を少し残しておく
+    batch.api_limit -= @@STORE_API_LIMIT
 
     return if (0 != (fetch_count + update_count + update_count))
     #self.optimize_tch
