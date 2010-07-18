@@ -54,7 +54,7 @@ class FollotterDatabase
                new_user.followers_count   != user_hash[:followers_count]   ||
                new_user.url               != user_hash[:url]               ||
                new_user.location          != user_hash[:location]          ||
-               new_user.description       != user_hash[:description])      ||
+               new_user.description       != user_hash[:description]       ||
                new_user.name              != user_hash[:name])
     end
 

@@ -79,7 +79,7 @@ class FollotterBroker < FollotterDatabase
       crawl_users = Array.new
     end
     if 0 < crawl_users.size
-      self.create_queue(crawl_users)
+      queue = self.create_queue(crawl_users)
       qq = carrot.queue('fetcher')
       qq.publish(Marshal.dump(queue))
       batch.api_limit -= 1
@@ -93,6 +93,10 @@ class FollotterBroker < FollotterDatabase
     while batch.api_limit > 0
       msg = broke.pop(:ack => false)
       break unless msg
+      queue = Marshal.load(msg)
+      user = queue[:lookup_user]
+      # 発言数が一定以下のユーザはスキップ
+      next if @@LOWER_LIMIT > user.statuses_count
       fetch.publish(msg)
       batch.api_limit -= 1
     end

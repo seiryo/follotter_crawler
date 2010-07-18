@@ -123,6 +123,7 @@ class FollotterUpdater < FollotterDatabase
         queue[:relations]        = @queue[:lookup_relations][user_id][:normal][target]
         queue[:remove_relations] = @queue[:lookup_relations][user_id][:remove][target]
         queue[:new_relations]    = []
+        queue[:lookup_user]      = update_user
         if    ("ids" == api)
           queue[:url] = "http://api.twitter.com/1/#{queue[:target]}/#{queue[:api]}.json?id=#{queue[:user_id].to_s}&cursor=-1"
         elsif ("statuses" == api)
@@ -150,8 +151,8 @@ class FollotterUpdater < FollotterDatabase
       act = 5 if :profile_image_url == key
       act = 4 if :url               == key
       next    if nil == act
-      target_ids = [value, before_value].join("\t\n")
-      return_values << "(#{user.id.to_s}, #{target_ids}, #{act.to_s}, '#{@created_at}')"
+      target_ids = [value, before_value].join("")
+      return_values << "(#{user.id.to_s}, '#{target_ids}', #{act.to_s}, '#{@created_at}')"
     end
     return return_values
   end
