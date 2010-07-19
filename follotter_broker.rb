@@ -26,6 +26,7 @@ class FollotterBroker < FollotterDatabase
     @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
     @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
     @@STORE_API_LIMIT = config['STORE_API_LIMIT']
+    @@ACTIVE_RATE     = config['ACTIVE_USER_FETCH_RATE']
     @@CONFIG          = config
 
     broke_count, fetch_count, parse_count, update_count = self.acquire_queue_count(@@QUEUE_FILE_PATH)
@@ -64,7 +65,7 @@ class FollotterBroker < FollotterDatabase
   def self.enqueue_lookup(carrot, batch)
     crawl_users = Array.new
     active_users = ActiveUser.find(:all, :order => 'updated DESC',
-                                   :limit => batch.api_limit)
+                                   :limit => @@ACTIVE_RATE * batch.api_limit)
     active_users.each do |au|
       au_id = au.id
       au.destroy
