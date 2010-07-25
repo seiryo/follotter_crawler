@@ -85,13 +85,13 @@ class FollotterDatabase
   class FollowStatus < ActiveRecord::Base
   end
 
-  class FollowLine < ActiveRecord::Base
+  class FollowStream < ActiveRecord::Base
   end
 
   class RemoveStatus < ActiveRecord::Base
   end
 
-  class RemoveLine < ActiveRecord::Base
+  class ActivityStream < ActiveRecord::Base
   end
 
   class Batch < ActiveRecord::Base

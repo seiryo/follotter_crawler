@@ -103,7 +103,7 @@ class FollotterUpdater < FollotterDatabase
       next unless User.judge_changing(update_user, user_hash)
       lookup_values = _acquire_lookup_value(update_user, user_hash)
       if 0 < lookup_values.size
-        sql  = "INSERT INTO follow_lines (user_id, target_ids, action, created_at) VALUES "
+        sql  = "INSERT INTO activity_streams (user_id, target_ids, action, created_at) VALUES "
         sql += lookup_values.join(",")
         ActiveRecord::Base.connection.execute(sql)
       end
@@ -170,9 +170,9 @@ class FollotterUpdater < FollotterDatabase
       next_hash[:friends] = "statuses"
     end
     if    (lookup_relations[:followers].size < user_hash[:friends_count].to_i)
-      next_hash[:followers] = "ids"
+      ###next_hash[:followers] = "ids"
     elsif (lookup_relations[:followers].size > user_hash[:friends_count].to_i)
-      next_hash[:followers] = "statuses"
+      ###next_hash[:followers] = "statuses"
     end
     return next_hash
   end
@@ -236,9 +236,9 @@ class FollotterUpdater < FollotterDatabase
     sql = "INSERT INTO remove_statuses (user_id, target_id, action, created_at) VALUES " + status_values.join(",")
     ActiveRecord::Base.connection.execute(sql)
 
-    sql  = "INSERT INTO remove_lines (user_id, target_ids, action, created_at) VALUES "
-    sql += _acquire_status_value(@queue[:user_id], "'#{removed_user_ids.join(',')}'")
-    ActiveRecord::Base.connection.execute(sql)
+    ###sql  = "INSERT INTO remove_lines (user_id, target_ids, action, created_at) VALUES "
+    ###sql += _acquire_status_value(@queue[:user_id], "'#{removed_user_ids.join(',')}'")
+    ###ActiveRecord::Base.connection.execute(sql)
 
     return true
   end
@@ -282,8 +282,6 @@ class FollotterUpdater < FollotterDatabase
         status_values << _acquire_status_value(@queue[:user_id], target_id)
         next
       end
-      #next if _find_user_relation(user.id, target_id)
-      #unless user_relations.index(target_id)
       friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
       status_values << _acquire_status_value(@queue[:user_id], target_id)
       welcome_ids << target_id
@@ -299,9 +297,9 @@ class FollotterUpdater < FollotterDatabase
     ActiveRecord::Base.connection.execute(sql) if 0 < status_values.size
 
     if 0 < status_values.size
-      sql  = "INSERT INTO follow_lines (user_id, target_ids, action, created_at) VALUES "
-      sql += _acquire_status_value(@queue[:user_id], "'#{welcome_ids.join(',')}'")
-      ActiveRecord::Base.connection.execute(sql)
+      ###sql  = "INSERT INTO follow_lines (user_id, target_ids, action, created_at) VALUES "
+      ###sql += _acquire_status_value(@queue[:user_id], "'#{welcome_ids.join(',')}'")
+      ###ActiveRecord::Base.connection.execute(sql)
     end
 
     if 0 < status_values.size
