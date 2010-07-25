@@ -144,8 +144,8 @@ class FollotterUpdater < FollotterDatabase
       next if (nil == value || nil == before_value)
       next if (value == before_value)
       if :profile_image_url == key
-        now_icon =        value.split("/").slice(4,2).join("/")
-        old_icon = before_value.split("/").slice(4,2).join("/")
+        now_icon =        value.split("/").last
+        old_icon = before_value.split("/").last
         next if now_icon == old_icon
       end
       act = nil
