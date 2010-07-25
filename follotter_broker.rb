@@ -69,9 +69,12 @@ class FollotterBroker < FollotterDatabase
     active_users.each do |au|
       au_id = au.id
       au.destroy
-      #user = User.find_by_id(au_id)
-      #next unless user
-      next unless @@LOWER_LIMIT <= user.statuses_count
+      user = User.find_by_id(au_id)
+      unless user
+        user    = User.new
+        user.id = au_id.to_i
+      end
+      #next unless @@LOWER_LIMIT <= user.statuses_count
 
       crawl_users << user
       next if 100 > crawl_users.size
@@ -123,7 +126,7 @@ class FollotterBroker < FollotterDatabase
     queue[:lookup_relations]  = Hash.new
 
     crawl_users.each do |user|
-      queue[:lookup_users_hash][user.id] = user
+      queue[:lookup_users_hash][user.id] = user if nil != user.screen_name
       queue[:lookup_relations][user.id]  = self.acquire_relations(user.id)
     end
 

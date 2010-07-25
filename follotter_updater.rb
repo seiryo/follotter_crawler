@@ -86,25 +86,22 @@ class FollotterUpdater < FollotterDatabase
     users_hash.each do |user_id, user_hash|
       user_id = user_id.to_i
 
-      # 未知のユーザの場合
       unless @queue[:lookup_users_hash].has_key?(user_id)
-        #user_hash[:friends_count]   = 0
-        #user_hash[:followers_count] = 0
-        _create_new_user(user_id, user_hash, nil) 
-        next
+        # 未知ユーザの場合：ユーザ情報作成
+        update_user = _create_new_user(user_id, user_hash, nil) 
+      else
+        # 既知ユーザの場合：ユーザ情報更新
+        update_user = @queue[:lookup_users_hash][user_id]
+        next unless User.judge_changing(update_user, user_hash)
+        lookup_values = _acquire_lookup_value(update_user, user_hash)
+        if 0 < lookup_values.size
+          sql  = "INSERT INTO activity_streams (user_id, target_ids, action, created_at) VALUES "
+          sql += lookup_values.join(",")
+          ActiveRecord::Base.connection.execute(sql)
+        end
+        update_user = User.set_user_hash(update_user, user_hash) 
+        update_user.save
       end
-      #ユーザ情報更新
-
-      update_user = @queue[:lookup_users_hash][user_id]
-      next unless User.judge_changing(update_user, user_hash)
-      lookup_values = _acquire_lookup_value(update_user, user_hash)
-      if 0 < lookup_values.size
-        sql  = "INSERT INTO activity_streams (user_id, target_ids, action, created_at) VALUES "
-        sql += lookup_values.join(",")
-        ActiveRecord::Base.connection.execute(sql)
-      end
-      update_user = User.set_user_hash(update_user, user_hash) 
-      update_user.save
 
       _acquire_next_crawl_hash(@queue[:lookup_relations][user_id][:normal], user_hash).each do |target, api|
         queue                    = Hash.new
@@ -155,14 +152,14 @@ class FollotterUpdater < FollotterDatabase
 
   def _acquire_next_crawl_hash(lookup_relations, user_hash)
     next_hash = Hash.new
-    if    (lookup_relations[:friends].size < user_hash[:friends_count].to_i)
+    if    (lookup_relations[:friends].size > user_hash[:friends_count].to_i || 0 == lookup_relations[:followers].size)
       next_hash[:friends] = "ids"
-    elsif (lookup_relations[:friends].size > user_hash[:friends_count].to_i)
+    elsif (lookup_relations[:friends].size < user_hash[:friends_count].to_i)
       next_hash[:friends] = "statuses"
     end
-    if    (lookup_relations[:followers].size < user_hash[:friends_count].to_i)
+    if    (lookup_relations[:followers].size > user_hash[:followers_count].to_i || 0 == lookup_relations[:followers].size)
       ###next_hash[:followers] = "ids"
-    elsif (lookup_relations[:followers].size > user_hash[:friends_count].to_i)
+    elsif (lookup_relations[:followers].size < user_hash[:followers_count].to_i)
       ###next_hash[:followers] = "statuses"
     end
     return next_hash
@@ -316,7 +313,7 @@ class FollotterUpdater < FollotterDatabase
     user_id = user_id.to_i
 
     if user_model
-      return true
+      return user_model
     end
     # 未知のユーザの場合
     ## MySQL挿入
@@ -327,7 +324,7 @@ class FollotterUpdater < FollotterDatabase
     unless new_user.save
       return false
     end
-    return true
+    return new_user
   end
 
   def _acquire_status_value(user_id, target_id)
