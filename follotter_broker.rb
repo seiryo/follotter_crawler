@@ -69,8 +69,8 @@ class FollotterBroker < FollotterDatabase
     active_users.each do |au|
       au_id = au.id
       au.destroy
-      user = User.find_by_id(au_id)
-      next unless user
+      #user = User.find_by_id(au_id)
+      #next unless user
       next unless @@LOWER_LIMIT <= user.statuses_count
 
       crawl_users << user

@@ -65,11 +65,6 @@ class FollotterUpdater < FollotterDatabase
   end
 
   def update_parse_result
-    #@rdb = RDB::new
-    #if !@rdb.open(@host_tt, 1978)
-    #  ecode = rdb.ecode
-    #  raise "rdb open error" + @rdb.errmsg(ecode)
-    #end
 
     result = false
     begin
@@ -78,11 +73,6 @@ class FollotterUpdater < FollotterDatabase
       result = update_lookup   if ("lookup" == @queue[:api])
     rescue => ex
       raise ex
-    ensure
-      #if !@rdb.close
-      #  ecode = @rdb.ecode
-      #  raise "rdb close error" + @rdb.errmsg(ecode)
-      #end
     end
 
     return result
@@ -95,10 +85,16 @@ class FollotterUpdater < FollotterDatabase
     users_hash = @queue[:parse_result]
     users_hash.each do |user_id, user_hash|
       user_id = user_id.to_i
-      next unless @queue[:lookup_users_hash].has_key?(user_id)
+
+      # 未知のユーザの場合
+      unless @queue[:lookup_users_hash].has_key?(user_id)
+        #user_hash[:friends_count]   = 0
+        #user_hash[:followers_count] = 0
+        _create_new_user(user_id, user_hash, nil) 
+        next
+      end
       #ユーザ情報更新
 
-      ## MySQL更新
       update_user = @queue[:lookup_users_hash][user_id]
       next unless User.judge_changing(update_user, user_hash)
       lookup_values = _acquire_lookup_value(update_user, user_hash)
@@ -109,11 +105,6 @@ class FollotterUpdater < FollotterDatabase
       end
       update_user = User.set_user_hash(update_user, user_hash) 
       update_user.save
-      ## RDB更新
-      #hu = { :screen_name       => user_hash[:screen_name],
-      #       :statuses_count    => user_hash[:statuses_count],
-      #       :profile_image_url => user_hash[:profile_image_url] }
-      #@rdb.put(user_id, Marshal.dump(hu))
 
       _acquire_next_crawl_hash(@queue[:lookup_relations][user_id][:normal], user_hash).each do |target, api|
         queue                    = Hash.new
@@ -275,7 +266,7 @@ class FollotterUpdater < FollotterDatabase
     newcomer_ids.each do |target_id|
       next unless @queue[:user_id] != target_id
       next unless users_hash[target_id]
-      next unless _update_user(target_id, users_hash[target_id], newcomer_hash[target_id]) 
+      next unless _create_new_user(target_id, users_hash[target_id], newcomer_hash[target_id]) 
       if nil != @queue[:remove_relations].index(target_id)
         sql  = "UPDATE #{table_name} SET removed = 0 "
         sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
@@ -321,7 +312,7 @@ class FollotterUpdater < FollotterDatabase
     return user.save
   end
 
-  def _update_user(user_id, user_hash, user_model)
+  def _create_new_user(user_id, user_hash, user_model)
     user_id = user_id.to_i
 
     if user_model
