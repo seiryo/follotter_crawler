@@ -70,7 +70,7 @@ class FollotterUpdater < FollotterDatabase
     begin
       result = update_ids      if ("ids"      == @queue[:api])
       result = update_statuses if ("statuses" == @queue[:api])
-      result = update_lookup   if ("lookup" == @queue[:api])
+      result = update_lookup   if ("lookup"   == @queue[:api])
     rescue => ex
       raise ex
     end
@@ -137,12 +137,12 @@ class FollotterUpdater < FollotterDatabase
         next if now_icon == old_icon
       end
       act = nil
-      act = 9 if :screen_name       == key
-      act = 8 if :name              == key
-      act = 7 if :location          == key
-      act = 6 if :description       == key
-      act = 5 if :profile_image_url == key
-      act = 4 if :url               == key
+      act = 0 if :screen_name       == key
+      act = 1 if :name              == key
+      act = 2 if :location          == key
+      act = 3 if :description       == key
+      act = 4 if :profile_image_url == key
+      act = 5 if :url               == key
       next    if nil == act
       target_ids = [value, before_value].join("")
       return_values << "(#{user.id.to_s}, '#{target_ids}', #{act.to_s}, '#{@created_at}')"
@@ -152,7 +152,7 @@ class FollotterUpdater < FollotterDatabase
 
   def _acquire_next_crawl_hash(lookup_relations, user_hash)
     next_hash = Hash.new
-    if    (lookup_relations[:friends].size > user_hash[:friends_count].to_i || 0 == lookup_relations[:followers].size)
+    if    (lookup_relations[:friends].size > user_hash[:friends_count].to_i || 0 == lookup_relations[:friends].size)
       next_hash[:friends] = "ids"
     elsif (lookup_relations[:friends].size < user_hash[:friends_count].to_i)
       next_hash[:friends] = "statuses"
@@ -264,6 +264,8 @@ class FollotterUpdater < FollotterDatabase
       next unless @queue[:user_id] != target_id
       next unless users_hash[target_id]
       next unless _create_new_user(target_id, users_hash[target_id], newcomer_hash[target_id]) 
+      table_name = @queue[:target] 
+      next if ("friends" != table_name && "followers" != table_name)
       if nil != @queue[:remove_relations].index(target_id)
         sql  = "UPDATE #{table_name} SET removed = 0 "
         sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
