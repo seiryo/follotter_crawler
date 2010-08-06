@@ -80,15 +80,19 @@ class FollotterBroker < FollotterDatabase
       next if 100 > crawl_users.size
 
       queue = self.create_queue(crawl_users)
-      qq = carrot.queue('fetcher')
-      qq.publish(Marshal.dump(queue))
+      fq = carrot.queue('fetcher')
+      fq.publish(Marshal.dump(queue))
+      sq = carrot.queue('streamer')
+      sq.publish(Marshal.dump(queue))
       batch.api_limit -= 1
       crawl_users = Array.new
     end
     if 0 < crawl_users.size
       queue = self.create_queue(crawl_users)
-      qq = carrot.queue('fetcher')
-      qq.publish(Marshal.dump(queue))
+      fq = carrot.queue('fetcher')
+      fq.publish(Marshal.dump(queue))
+      sq = carrot.queue('streamer')
+      sq.publish(Marshal.dump(queue))
       batch.api_limit -= 1
     end
     return batch

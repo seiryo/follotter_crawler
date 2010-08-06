@@ -16,57 +16,62 @@ include TokyoCabinet
 $:.unshift(File.dirname(__FILE__))
 require 'follotter_database'
 
-class FollotterFollowStreamer < FollotterDatabase
+class FollotterStreamer < FollotterDatabase
 
   @@CONFIG_FILE_PATH = '/home/seiryo/work/follotter/follotter_config.yml'
 
-  @@rescue_count = 0
+  @@ok_count = 0
+  @@ng_count = 0
 
   def self.start
-    name = Time.now.strftime("%Y%m%d")
-    file = File.open("/tmp/ffs_#{name}",'w')
-    file.puts Time.now.strftime("%Y-%m-%d %H:%M:%S")
-    file.close
-
-    # SYNC_FOLLOW_THRESHOLD
     config           = YAML.load_file(@@CONFIG_FILE_PATH)
-    statuses_limit   = config['STATUSES_LOWER_LIMIT']
+
     sync_threshold   = config['SYNC_FOLLOW_THRESHOLD']
     stream_file_path = config['FOLLOW_STREAM_FILE_PATH']
-    stat = FollotterFollowStreamer.new(sync_threshold, stream_file_path)
+
+    stat = FollotterStreamer.new(sync_threshold, stream_file_path)
+
+    statuses_limit   = config['STATUSES_LOWER_LIMIT']
+    host_mq          = config['HOST_MQ']
 
     result = stat.set_follow_statuses_hash
-    return unless result
-    stat.put_follow_statuses_hash
-    exit    
+    #return unless result
+    #stat.put_follow_statuses_hash
 
-    last_id = User.find(:first, :order => "id DESC").id
+    AMQP.start(:host => host_mq) do
+      q = MQ.queue('streamer')
+      q.pop do |msg|
+        unless msg 
+          EM.add_timer(1){ q.pop }
+        else
+          message = Marshal.load(msg)
+          if String == message.class  
+            name = Time.now.strftime("%Y%m%d%H%M%S")
+            file = File.open("/tmp/ffs_#{name}",'w')
+            file.puts  "OK:#{@@ok_count.to_s}"
+            file.puts  "NG:#{@@ng_count.to_s}"
+            file.close
+            @@ok_count = 0
+            @@ng_count = 0
+            stat.set_follow_statuses_hash
+          else
+            message[:lookup_users_hash].keys.each do |user_id|
+              user = message[:lookup_users_hash][user_id]
+              next unless user
+              next unless 0 < user.friends_count
+              next unless statuses_limit < user.statuses_count
+              friend_ids = message[:lookup_relations][user.id][:normal][:friends]
+              next unless stat.set_friend_ids(friend_ids)
+              sync_hash, other_hash = stat.get_relations_hash(user.id)
+              next if (sync_hash.size == 0 && other_hash.size == 0)
+              stat.create_follow_streams(user.id, sync_hash, other_hash)      
+            end
+          end
+          q.pop
+        end 
+      end 
+    end 
 
-    now_id = 0
-    loop do
-      break if last_id < now_id
-      users = User.find(:all, :select => "id, friends_count, statuses_count",
-                        :conditions => ["id > ? AND id <= ?", now_id, now_id + 100000])
-      now_id += 100000
-      next unless 0 < users.size
-
-      users.each do |user|
-        next unless 0 < user.friends_count
-        next unless statuses_limit < user.statuses_count
-
-        result = stat.set_friend_ids(user.id)
-        next unless result
-
-        sync_hash, other_hash = stat.get_relations_hash(user.id)
-        next if (sync_hash.size == 0 && other_hash.size == 0)
-        stat.create_follow_streams(user.id, sync_hash, other_hash)
-      end
-    end
-
-    file = File.open("/tmp/ffs_#{name}",'a')
-    file.puts Time.now.strftime("%Y-%m-%d %H:%M:%S")
-    file.puts @@rescue_count.to_s
-    file.close
   end
 
   #attr_reader :follow_hash
@@ -83,14 +88,15 @@ class FollotterFollowStreamer < FollotterDatabase
     act = "0"
     h_values = Array.new
     h_streams.each do |target_id, friend_ids|
-      h_values << [friend_ids.join(','), target_id].join(':')
+      ###h_values << [friend_ids.join(','), target_id].join(':')
     end
     created_at = Time.now.strftime("%Y-%m-%d %H:%M:%S")
     sql_value = "(#{user_id.to_s}, '#{h_values.join('/')}', #{act}, '#{created_at}')" if 0 < h_values.size
     begin
       ActiveRecord::Base.connection.execute(sql + sql_value) if 0 < h_values.size
+      @@ok_count += 1
     rescue
-      @@rescue_count += 1
+      @@ng_count += 1
     end
     ###
     insert_values = Array.new
@@ -103,8 +109,9 @@ class FollotterFollowStreamer < FollotterDatabase
     sql += insert_values.join(",")
     begin
       ActiveRecord::Base.connection.execute(sql) if 0 < insert_values.size
+      @@ok_count += 1
     rescue
-      @@rescue_count += 1
+      @@ng_count += 1
     end
   end
 
@@ -137,13 +144,14 @@ class FollotterFollowStreamer < FollotterDatabase
     return sync_hash, true_other_hash
   end
 
-  def set_friend_ids(user_id)
-    @friends_ids = Array.new
-    Friend.find_all_by_user_id(user_id).each do |f|
-      next unless false == f.removed
-      @friends_ids << f.target_id
-    end
+  def set_friend_ids(friend_ids)
+    return false unless friend_ids
+    @friends_ids = friend_ids
     return 0 < @friends_ids.size
+    #Friend.find_all_by_user_id(user_id).each do |f|
+    #  next unless false == f.removed
+    #  @friends_ids << f.target_id
+    #end
   end
 
   def set_follow_statuses_hash
@@ -177,4 +185,6 @@ class FollotterFollowStreamer < FollotterDatabase
 
 end
 
-FollotterFollowStreamer.start
+WEBrick::Daemon.start {
+  FollotterStreamer.start
+}
