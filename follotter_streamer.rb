@@ -53,6 +53,7 @@ class FollotterStreamer < FollotterDatabase
             file.close
             @@ok_count = 0
             @@ng_count = 0
+            stat = FollotterStreamer.new(sync_threshold, stream_file_path)
             stat.set_follow_statuses_hash
           else
             message[:lookup_users_hash].keys.each do |user_id|
@@ -124,12 +125,12 @@ class FollotterStreamer < FollotterDatabase
     @friends_ids.each do |f_id|
       next unless @follow_hash.has_key?(f_id)
       @follow_hash[f_id].each do |target_id|
-        unless nil ==  @friends_ids.index(target_id)
-          # 自分のfriends間のfollowing
-          sync_hash[target_id] = [] unless sync_hash.has_key?(target_id)
-          sync_hash[target_id] << f_id
-          next
-        end
+        #unless nil ==  @friends_ids.index(target_id)
+        #  # 自分のfriends間のfollowing
+        #  sync_hash[target_id] = [] unless sync_hash.has_key?(target_id)
+        #  sync_hash[target_id] << f_id
+        #  next
+        #end
         # その他のfollowing
         other_hash[target_id] = [] unless other_hash.has_key?(target_id)
         other_hash[target_id] << f_id
@@ -138,8 +139,9 @@ class FollotterStreamer < FollotterDatabase
     end
     true_other_hash = Hash.new
     other_hash.keys.each do |target_id|
-      next unless @sync_threshold <= other_hash[target_id].size
-      true_other_hash[target_id]   = other_hash[target_id]
+      uniq_ids = other_hash[target_id].uniq
+      next unless @sync_threshold <= uniq_ids.size
+      true_other_hash[target_id]   = uniq_ids
     end
     return sync_hash, true_other_hash
   end

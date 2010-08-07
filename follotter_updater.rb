@@ -48,7 +48,10 @@ class FollotterUpdater < FollotterDatabase
               end
             end
           rescue => ex
-            pp ex
+            name = Time.now.strftime("%Y%m%d")
+            file = File.open("/tmp/fu_#{name}",'a')
+            file.puts Time.now.strftime("%Y-%m-%d %H:%M:%S") + "_" + ex 
+            file.close
           end
           q.pop
         end
@@ -144,6 +147,8 @@ class FollotterUpdater < FollotterDatabase
       act = 4 if :profile_image_url == key
       act = 5 if :url               == key
       next    if nil == act
+      value        = value.gsub("'", "\'")
+      before_value = before_value.gsub("'", "\'")
       target_ids = [value, before_value].join("")
       return_values << "(#{user.id.to_s}, '#{target_ids}', #{act.to_s}, '#{@created_at}')"
     end
@@ -269,7 +274,8 @@ class FollotterUpdater < FollotterDatabase
       if nil != @queue[:remove_relations].index(target_id)
         sql  = "UPDATE #{table_name} SET removed = 0 "
         sql += "WHERE user_id = #{@queue[:user_id].to_s} AND target_id = #{target_id.to_s}"
-        status_values << _acquire_status_value(@queue[:user_id], target_id)
+        ActiveRecord::Base.connection.execute(sql)
+        #status_values << _acquire_status_value(@queue[:user_id], target_id)
         next
       end
       friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)

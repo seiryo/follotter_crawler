@@ -24,6 +24,7 @@ class FollotterBroker < FollotterDatabase
     @@HOST_MQ         = config["HOST_MQ"]
     @@HDB_FILE_PATH   = config["HDB_FILE_PATH"]
     @@QUEUE_FILE_PATH = config['QUEUE_COUNTER_FILE_PATH']
+    @@RESET_FILE_PATH = config['QUEUE_RESETER_FILE_PATH']
     @@LOWER_LIMIT     = config['STATUSES_LOWER_LIMIT']
     @@STORE_API_LIMIT = config['STORE_API_LIMIT']
     @@ACTIVE_RATE     = config['ACTIVE_USER_FETCH_RATE']
@@ -183,6 +184,8 @@ class FollotterBroker < FollotterDatabase
     if 0 == finish_count
       `/bin/sh /home/seiryo/work/follotter/follotter_yats.sh`
       finish_count = ActiveUser.count
+      # Streamerへのキューをリセット
+      `ruby #{@@RESET_FILE_PATH}`
     end
 
     # API残り回数を取得
