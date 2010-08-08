@@ -147,8 +147,8 @@ class FollotterUpdater < FollotterDatabase
       act = 4 if :profile_image_url == key
       act = 5 if :url               == key
       next    if nil == act
-      value        = value.gsub("'", "\'")
-      before_value = before_value.gsub("'", "\'")
+      value        = value.gsub("'", "''")
+      before_value = before_value.gsub("'", "''")
       target_ids = [value, before_value].join("")
       return_values << "(#{user.id.to_s}, '#{target_ids}', #{act.to_s}, '#{@created_at}')"
     end

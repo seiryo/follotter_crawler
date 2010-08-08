@@ -82,6 +82,9 @@ class FollotterStreamer < FollotterDatabase
     @yesterday        = @today - 1
     @sync_threshold   = sync_threshold
     @stream_file_path = stream_file_path
+    batch = Batch.find(:first, :order => "id DESC",
+                       :conditions => ["created_at > ? AND finisher < ?", @yesterday, 15000])
+    @yesterday = batch.created_at if batch
   end
 
   def create_follow_streams(user_id, h_streams, v_streams)
