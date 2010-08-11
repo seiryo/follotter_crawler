@@ -18,6 +18,7 @@ require 'follotter_database'
 class FollotterBroker < FollotterDatabase
 
   def self.start
+
     config = YAML.load_file("/home/seiryo/work/follotter/follotter_config.yml")
     @@API_USER        = config["API_USER"]
     @@API_PASSWORD    = config["API_PASSWORD"]
@@ -61,6 +62,7 @@ class FollotterBroker < FollotterDatabase
     batch.api_limit = first_api_limit
     batch.save
     # 終了
+
   end
 
   def self.enqueue_lookup(carrot, batch)
@@ -181,11 +183,13 @@ class FollotterBroker < FollotterDatabase
       finish_count = 0
     end
     # アクティブユーザが居ない場合は取得
+    exception = nil
     if 0 == finish_count
       `/bin/sh /home/seiryo/work/follotter/follotter_yats.sh`
       finish_count = ActiveUser.count
       # Streamerへのキューをリセット
       `ruby #{@@RESET_FILE_PATH}`
+      exception = "reset"
     end
 
     # API残り回数を取得
@@ -193,6 +197,7 @@ class FollotterBroker < FollotterDatabase
 
     # 本バッチ情報を記録、作成
     batch = Batch.create(
+              :exception => exception,
               :api_limit => api_limit,
               :finisher  => finish_count,
               :broker    => broke_count,
@@ -225,5 +230,16 @@ class FollotterBroker < FollotterDatabase
 
 end
 
-FollotterBroker.start
+lock_file_path = "/tmp/fb_lock"
+unless File.exist?(lock_file_path)
+  begin
+    file = File.open(lock_file_path, 'w')
+    file.puts Time.now.strftime("%Y-%m-%d %H:%M:%S") 
+    file.close
+    FollotterBroker.start
+  rescue
+  ensure
+    File.unlink(lock_file_path)
+  end
+end
 

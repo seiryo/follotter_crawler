@@ -83,7 +83,8 @@ class FollotterStreamer < FollotterDatabase
     @sync_threshold   = sync_threshold
     @stream_file_path = stream_file_path
     batch = Batch.find(:first, :order => "id DESC",
-                       :conditions => ["created_at > ? AND finisher < ?", @yesterday, 15000])
+                       :conditions => ["created_at < ? AND created_at > ? AND exception = ?",
+                                       @today - Rational(1, 24),  @yesterday, "reset"])
     @yesterday = batch.created_at if batch
   end
 
