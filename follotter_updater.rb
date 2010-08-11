@@ -200,12 +200,17 @@ class FollotterUpdater < FollotterDatabase
         friend_values, follower_values = _acquire_user_value(@queue[:user_id], target_id, friend_values, follower_values)
       end
 
-      sql = "INSERT INTO friends   (user_id, target_id, created_at) VALUES " + friend_values.join(",")
-      ActiveRecord::Base.connection.execute(sql) if 0 < friend_values.size
+      while 0 < friend_values.size
+        _friend_values = friend_values.slice!(0..100)
+        sql = "INSERT INTO friends   (user_id, target_id, created_at) VALUES " + _friend_values.join(",")
+        ActiveRecord::Base.connection.execute(sql) if 0 < _friend_values.size
+      end
 
-      sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + follower_values.join(",")
-      ActiveRecord::Base.connection.execute(sql) if 0 < follower_values.size
-
+      while 0 < follower_values.size
+        _follower_values = follower_values.slice!(0..100)
+        sql = "INSERT INTO followers (user_id, target_id, created_at) VALUES " + _follower_values.join(",")
+        ActiveRecord::Base.connection.execute(sql) if 0 < _follower_values.size
+      end
       #_update_relation_count(user, newcomers.size)
 
       return true
