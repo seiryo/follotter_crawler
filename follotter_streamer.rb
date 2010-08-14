@@ -27,9 +27,10 @@ class FollotterStreamer < FollotterDatabase
     config           = YAML.load_file(@@CONFIG_FILE_PATH)
 
     sync_threshold   = config['SYNC_FOLLOW_THRESHOLD']
+    stream_max_limit = config['FOLLOW_STREAM_MAX_LIMIT']
     stream_file_path = config['FOLLOW_STREAM_FILE_PATH']
 
-    stat = FollotterStreamer.new(sync_threshold, stream_file_path)
+    stat = FollotterStreamer.new(sync_threshold, stream_max_limit, stream_file_path)
 
     statuses_limit   = config['STATUSES_LOWER_LIMIT']
     host_mq          = config['HOST_MQ']
@@ -77,10 +78,11 @@ class FollotterStreamer < FollotterDatabase
 
   #attr_reader :follow_hash
 
-  def initialize(sync_threshold, stream_file_path)
+  def initialize(sync_threshold, stream_max_limit, stream_file_path)
     @today            = DateTime.now
     @yesterday        = @today - 1
     @sync_threshold   = sync_threshold
+    @stream_max_limit = stream_max_limit
     @stream_file_path = stream_file_path
     batch = Batch.find(:first, :order => "id DESC",
                        :conditions => ["created_at < ? AND created_at > ? AND exception = ?",
@@ -141,12 +143,27 @@ class FollotterStreamer < FollotterDatabase
         next
       end
     end
+    follow_counts = Array.new
     true_other_hash = Hash.new
     other_hash.keys.each do |target_id|
       uniq_ids = other_hash[target_id].uniq
       next unless @sync_threshold <= uniq_ids.size
       true_other_hash[target_id]   = uniq_ids
+      follow_counts               << uniq_ids.size
     end
+
+    #
+    max_limit = @sync_threshold
+    if true_other_hash.size > @stream_max_limit
+      follow_counts = follow_counts.sort.reverse
+      max_limit = follow_counts[@stream_max_limit - 1]
+      true_other_hash.delete_if {|k, v| v.size < max_limit }
+      if true_other_hash.size > @stream_max_limit
+        true_other_hash.delete_if {|k, v| v.size <= max_limit }
+      end
+    end
+    #
+
     return sync_hash, true_other_hash
   end
 
