@@ -212,13 +212,13 @@ class FollotterStreamer < FollotterDatabase
 
 end
 
-#WEBrick::Daemon.start {
-#  begin
+WEBrick::Daemon.start {
+  begin
     FollotterStreamer.start
-#  rescue => ex
-#    name = Time.now.strftime("%Y%m%d%H%M%S")
-#    file = File.open("/tmp/ffs_rescue_#{name}",'w')
-#    file.puts ex
-#    file.close
-#  end
-#}
+  rescue => ex
+    name = Time.now.strftime("%Y%m%d%H%M%S")
+    file = File.open("/tmp/ffs_rescue_#{name}",'w')
+    file.puts ex
+    file.close
+  end
+}
