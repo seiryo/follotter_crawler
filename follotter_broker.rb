@@ -187,8 +187,6 @@ class FollotterBroker < FollotterDatabase
     if 0 == finish_count
       `/bin/sh /home/seiryo/work/follotter/follotter_yats.sh`
       finish_count = ActiveUser.count
-      # Streamerへのキューをリセット
-      `ruby #{@@RESET_FILE_PATH}`
       exception = "reset"
     end
 
@@ -204,6 +202,11 @@ class FollotterBroker < FollotterDatabase
               :fetcher   => fetch_count,
               :parser    => parse_count,
               :updater   => update_count)
+
+    if nil != exception 
+      # Streamerへのキューをリセット
+      `ruby #{@@RESET_FILE_PATH}`
+    end
 
     return batch
   end

@@ -30,7 +30,7 @@ class FollotterStreamer < FollotterDatabase
     stream_max_limit = config['FOLLOW_STREAM_MAX_LIMIT']
     stream_file_path = config['FOLLOW_STREAM_FILE_PATH']
 
-    stat = FollotterStreamer.new(sync_threshold, stream_max_limit, stream_file_path)
+    stat = FollotterStreamer.new
 
     statuses_limit   = config['STATUSES_LOWER_LIMIT']
     host_mq          = config['HOST_MQ']
@@ -54,7 +54,7 @@ class FollotterStreamer < FollotterDatabase
             file.close
             @@ok_count = 0
             @@ng_count = 0
-            stat = FollotterStreamer.new(sync_threshold, stream_file_path)
+            stat = FollotterStreamer.new
             stat.set_follow_statuses_hash
           else
             message[:lookup_users_hash].keys.each do |user_id|
@@ -78,16 +78,20 @@ class FollotterStreamer < FollotterDatabase
 
   #attr_reader :follow_hash
 
-  def initialize(sync_threshold, stream_max_limit, stream_file_path)
+  def initialize
+    config            = YAML.load_file(@@CONFIG_FILE_PATH)
+    @sync_threshold   = config['SYNC_FOLLOW_THRESHOLD']
+    @stream_max_limit = config['FOLLOW_STREAM_MAX_LIMIT']
+    @stream_file_path = config['FOLLOW_STREAM_FILE_PATH']
+
     @today            = DateTime.now
     @yesterday        = @today - 1
-    @sync_threshold   = sync_threshold
-    @stream_max_limit = stream_max_limit
-    @stream_file_path = stream_file_path
-    batch = Batch.find(:first, :order => "id DESC",
-                       :conditions => ["created_at < ? AND created_at > ? AND exception = ?",
-                                       @today - Rational(1, 24),  @yesterday, "reset"])
-    @yesterday = batch.created_at if batch
+    batches = Batch.find(:all, :order => "id DESC", :limit => 2,
+                       :conditions => ["exception = ?", "reset"])
+    if 2 == batches.size
+      @today     = batches.first.created_at
+      @yesterday = batches.last.created_at
+    end
   end
 
   def create_follow_streams(user_id, h_streams, v_streams)
@@ -208,6 +212,13 @@ class FollotterStreamer < FollotterDatabase
 
 end
 
-WEBrick::Daemon.start {
-  FollotterStreamer.start
-}
+#WEBrick::Daemon.start {
+#  begin
+    FollotterStreamer.start
+#  rescue => ex
+#    name = Time.now.strftime("%Y%m%d%H%M%S")
+#    file = File.open("/tmp/ffs_rescue_#{name}",'w')
+#    file.puts ex
+#    file.close
+#  end
+#}
