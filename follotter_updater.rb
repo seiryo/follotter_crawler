@@ -158,7 +158,7 @@ class FollotterUpdater < FollotterDatabase
       before_value = before_value.gsub("'", "''")
       target_ids = [value, before_value].join("")
       return_values << "(#{user.id.to_s}, '#{target_ids}', #{act.to_s}, '#{@created_at}')"
-      fanout_values << [user_id, target_ids, act, @created_at, user_hash[:screen_name], user_hash[:profile_image_url]].join("")
+      fanout_values << [user.id, target_ids, act, @created_at, user_hash[:screen_name], user_hash[:profile_image_url]].join("")
     end
     return return_values, fanout_values
   end
