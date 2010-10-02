@@ -43,6 +43,9 @@ class FollotterUpdater < FollotterDatabase
                 updater.queue[:next_queues].each do |next_queue|
                   MQ.queue('broker').publish(Marshal.dump(next_queue))
                 end
+                updater.queue[:fanout_public].each do |fanout_value|
+                  MQ.new.fanout('indexer').publish(Marshal.dump(fanout_value))
+                end
               else
                 MQ.queue('fetcher').publish(Marshal.dump(updater.queue))
               end
@@ -85,6 +88,7 @@ class FollotterUpdater < FollotterDatabase
 
   def update_lookup
     @queue[:next_queues] = Array.new
+    @queue[:fanout_public] = Array.new
     users_hash = @queue[:parse_result]
     users_hash.each do |user_id, user_hash|
       user_id = user_id.to_i
@@ -96,7 +100,7 @@ class FollotterUpdater < FollotterDatabase
         # 既知ユーザの場合：ユーザ情報更新
         update_user = @queue[:lookup_users_hash][user_id]
         next unless User.judge_changing(update_user, user_hash)
-        lookup_values = _acquire_lookup_value(update_user, user_hash)
+        lookup_values, fanout_values = _acquire_lookup_value(update_user, user_hash)
         if 0 < lookup_values.size
           sql  = "INSERT INTO activity_streams (user_id, target_ids, action, created_at) VALUES "
           sql += lookup_values.join(",")
@@ -104,6 +108,7 @@ class FollotterUpdater < FollotterDatabase
         end
         update_user = User.set_user_hash(update_user, user_hash) 
         update_user.save
+        @queue[:fanout_public] << fanout_values
       end
 
       _acquire_next_crawl_hash(@queue[:lookup_relations][user_id][:normal], user_hash).each do |target, api|
@@ -123,12 +128,14 @@ class FollotterUpdater < FollotterDatabase
         @queue[:next_queues] << queue
       end
     end
+    @queue[:fanout_public].flatten!
     return true if 0 == @queue[:next_queues].size
     return false
   end
 
   def _acquire_lookup_value(user, user_hash)
     return_values = Array.new
+    fanout_values = Array.new
     value_hash    = Hash.new
     user_hash.each do |key, value|
       before_value = User.get_param_from_key(user, key) 
@@ -151,8 +158,9 @@ class FollotterUpdater < FollotterDatabase
       before_value = before_value.gsub("'", "''")
       target_ids = [value, before_value].join("")
       return_values << "(#{user.id.to_s}, '#{target_ids}', #{act.to_s}, '#{@created_at}')"
+      fanout_values << [user.id, target_ids, act, @created_at].join("")
     end
-    return return_values
+    return return_values, fanout_values
   end
 
   def _acquire_next_crawl_hash(lookup_relations, user_hash)
